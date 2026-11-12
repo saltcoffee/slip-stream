@@ -105,7 +105,7 @@ export class CardStreamController implements ToolbarHost, SourceBarHost, CardHos
       (path) => this.state.collapsed.has(path),
       (path) => this.state.pinned.has(path)
     );
-    await this.refresh();
+    await this.refreshData();
   }
 
   destroy(): void {
@@ -117,7 +117,15 @@ export class CardStreamController implements ToolbarHost, SourceBarHost, CardHos
   }
 
   // ---- 数据 ----
-  async refresh(silent = false): Promise<void> {
+  refresh(): void {
+    void this.refreshData();
+  }
+
+  refreshSilent(): void {
+    void this.refreshData(true);
+  }
+
+  private async refreshData(silent = false): Promise<void> {
     const source = this.state.source;
     if (!source) {
       renderEmpty(this.streamEl, t("state.noSource"));
@@ -143,7 +151,7 @@ export class CardStreamController implements ToolbarHost, SourceBarHost, CardHos
       this.renderCards();
     } catch (e) {
       this.plugin.logger.error("resolve source failed", e);
-      renderError(this.streamEl, t("state.error"), () => void this.refresh(), t("common.retry"));
+      renderError(this.streamEl, t("state.error"), () => this.refresh(), t("common.retry"));
       this.updateStatus();
     }
   }
@@ -230,7 +238,11 @@ export class CardStreamController implements ToolbarHost, SourceBarHost, CardHos
     this.renderCards();
   }
 
-  async copy(card: CardModel): Promise<void> {
+  copy(card: CardModel): void {
+    void this.copyAsync(card);
+  }
+
+  private async copyAsync(card: CardModel): Promise<void> {
     const source = await this.plugin.gateway.read(card.file);
     const blocks = mapBlocks(this.plugin.app, card.file, source);
     const b = blocks[0];
@@ -297,7 +309,7 @@ export class CardStreamController implements ToolbarHost, SourceBarHost, CardHos
   clearCache(): void {
     this.plugin.renderService.clearCache();
     new Notice(t("tb.clearCache"));
-    void this.refresh();
+    this.refresh();
   }
 
   // ---- SourceBarHost ----
@@ -310,7 +322,7 @@ export class CardStreamController implements ToolbarHost, SourceBarHost, CardHos
   setSource(spec: SourceSpec): void {
     this.state.source = spec;
     this.sourceBar?.update();
-    void this.refresh();
+    this.refresh();
   }
   defaultFolder(): string {
     const active = this.plugin.app.workspace.getActiveFile();

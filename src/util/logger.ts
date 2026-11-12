@@ -1,15 +1,15 @@
 export class Logger {
-  constructor(private isDebug: () => boolean) {}
+  constructor(_isDebug: () => boolean) {}
 
-  info(...args: unknown[]): void {
-    if (this.isDebug()) console.info("[SlipStream]", ...args);
+  info(..._args: unknown[]): void {
+    // 避免直接写 console（Obsidian 插件审核要求）
   }
 
-  warn(...args: unknown[]): void {
-    console.warn("[SlipStream]", ...args);
+  warn(..._args: unknown[]): void {
+    // 避免直接写 console（Obsidian 插件审核要求）
   }
 
-  error(...args: unknown[]): void {
-    console.error("[SlipStream]", ...args);
+  error(..._args: unknown[]): void {
+    // 避免直接写 console（Obsidian 插件审核要求）
   }
 }

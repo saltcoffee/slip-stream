@@ -1,3 +1,5 @@
+import { getLanguage } from "obsidian";
+
 type Lang = "zh" | "en";
 
 interface Entry {
@@ -147,8 +149,8 @@ export function getLang(): Lang {
   if (override) return override;
   const candidates: string[] = [];
   try {
-    const stored = window.localStorage.getItem("language");
-    if (stored) candidates.push(stored);
+    const fromApi = getLanguage();
+    if (fromApi) candidates.push(fromApi);
   } catch {
     /* ignore */
   }

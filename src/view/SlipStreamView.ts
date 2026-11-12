@@ -52,7 +52,7 @@ export class SlipStreamView extends ItemView {
   }
 
   refreshFromExternal(): void {
-    void this.controller?.refresh(true);
+    this.controller?.refreshSilent();
   }
 
   relocalize(): void {
