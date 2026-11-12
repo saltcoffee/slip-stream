@@ -14,7 +14,7 @@ export class DragHandle {
     let current: HTMLElement | null = null;
     const position = () => {
       if (!current) return;
-      handle.setCssStyles({ top: `${current.offsetTop}px` });
+      handle.setCssProps({ "--slipstream-handle-top": `${current.offsetTop}px` });
     };
 
     bodyEl.querySelectorAll<HTMLElement>(".slipstream-block").forEach((block) => {
