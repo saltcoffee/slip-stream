@@ -44,7 +44,7 @@ export class CitationHistoryService {
       : rec.heading
       ? `${rec.sourcePath}#${rec.heading}`
       : rec.sourcePath;
-    this.app.workspace.openLinkText(link, "", false);
+    void this.app.workspace.openLinkText(link, "", false);
   }
 
   async clear(): Promise<void> {

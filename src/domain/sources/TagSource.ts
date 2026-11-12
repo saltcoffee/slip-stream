@@ -12,7 +12,7 @@ function collectTags(cache: CachedMetadata | null): string[] {
   for (const t of cache.tags ?? []) {
     out.push(normalizeTag(t.tag));
   }
-  const fmTags = (cache.frontmatter as Record<string, unknown> | undefined)?.tags;
+  const fmTags = cache.frontmatter?.tags;
   if (typeof fmTags === "string") {
     out.push(normalizeTag(fmTags));
   } else if (Array.isArray(fmTags)) {

@@ -43,7 +43,7 @@ export function mapBlocks(app: App, file: TFile, source: string): SourceBlock[] 
   const out: SourceBlock[] = [];
 
   for (const t of tokens) {
-    const map = t.map as [number, number] | null;
+    const map = t.map;
     if (!map) continue;
     const isListItem = t.type === "list_item_open";
     const isTopBlock =

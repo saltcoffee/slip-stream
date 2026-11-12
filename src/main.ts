@@ -100,7 +100,7 @@ export default class SlipStreamPlugin extends Plugin {
         state: { source },
       });
     }
-    workspace.revealLeaf(leaf);
+    void workspace.revealLeaf(leaf);
   }
 
   openHistory(): void {
@@ -123,13 +123,13 @@ export default class SlipStreamPlugin extends Plugin {
 
   private registerCommands(): void {
     this.addCommand({
-      id: "slipstream-open",
+      id: "open",
       name: t("cmd.open"),
       callback: () => void this.activateView(),
     });
 
     this.addCommand({
-      id: "slipstream-open-folder",
+      id: "open-folder",
       name: t("cmd.openFolder"),
       checkCallback: (checking) => {
         const file = this.app.workspace.getActiveFile();
@@ -159,11 +159,11 @@ export default class SlipStreamPlugin extends Plugin {
         },
       });
     };
-    linkCommand("slipstream-open-backlinks", t("cmd.openBacklinks"), "backlinks");
-    linkCommand("slipstream-open-outlinks", t("cmd.openOutlinks"), "outlinks");
+    linkCommand("open-backlinks", t("cmd.openBacklinks"), "backlinks");
+    linkCommand("open-outlinks", t("cmd.openOutlinks"), "outlinks");
 
     this.addCommand({
-      id: "slipstream-history",
+      id: "history",
       name: t("cmd.history"),
       callback: () => this.openHistory(),
     });
@@ -338,12 +338,13 @@ class HistoryModal extends Modal {
         });
 
         if (record.targetPath) {
+          const targetPath = record.targetPath;
           const open = item.createEl("button", {
             cls: "slipstream-btn",
             text: t("history.openTarget"),
           });
           open.addEventListener("click", () => {
-            this.plugin.app.workspace.openLinkText(record.targetPath as string, "", false);
+            void this.plugin.app.workspace.openLinkText(targetPath, "", false);
             this.close();
           });
         }

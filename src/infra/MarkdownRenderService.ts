@@ -11,7 +11,7 @@ export class MarkdownRenderService {
   constructor(private app: App) {}
 
   clearCache(): void {
-    // 保留接口：当前不缓存渲染结果（避免 innerHTML 与组件生命周期问题）
+    // 保留接口：当前不缓存渲染结果（避免 HTML 注入与组件生命周期问题）
   }
 
   async renderUnit(
