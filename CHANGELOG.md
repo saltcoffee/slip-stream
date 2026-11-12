@@ -8,7 +8,7 @@ All notable changes to SlipStream are documented in this file.
 
 ### Fixed
 
-- Use `setCssStyles` (instead of `setCssProps`) for dynamic layout styles, resolving the `obsidianmd/no-static-styles-assignment` review error.
+- Use CSS custom properties (`--slipstream-min-height`, `--slipstream-handle-top`) with `setCssProps` for dynamic layout styles, resolving the `obsidianmd/no-static-styles-assignment` review error.
 
 ## [0.1.1] - 2026-11-12
 
