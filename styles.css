@@ -100,6 +100,7 @@
 .slipstream-card-body {
   position: relative;
   padding: 8px 12px 8px 26px;
+  min-height: var(--slipstream-min-height, 0);
   font-size: calc(var(--font-text-size) * var(--slipstream-font-scale, 1));
 }
 
@@ -121,6 +122,7 @@
 .slipstream-drag-handle {
   position: absolute;
   left: 4px;
+  top: var(--slipstream-handle-top, 0);
   width: 16px;
   height: 20px;
   display: none;
