@@ -65,7 +65,6 @@ export default class SlipStreamPlugin extends Plugin {
       window.clearTimeout(this.refreshTimer);
       this.refreshTimer = null;
     }
-    this.app.workspace.detachLeavesOfType(VIEW_TYPE_SLIPSTREAM);
   }
 
   async loadSettings(): Promise<void> {
