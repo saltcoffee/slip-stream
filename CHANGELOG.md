@@ -4,9 +4,17 @@ All notable changes to SlipStream are documented in this file.
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-11-12
+
+### Fixed
+
+- Resolved Obsidian plugin review errors: unsafe `innerHTML` usage, detaching leaves in `onunload`, and direct static style assignment.
+- Addressed remaining review warnings: declarative settings (`getSettingDefinitions`), Obsidian `getLanguage()`, console logging, plugin-id-prefixed command IDs, unnecessary type assertions, Promise/void mismatches, unawaited promises, and the `builtin-modules` dependency.
+
 ### Changed
 
-- Address Obsidian plugin review warnings: declarative settings (`getSettingDefinitions`), use Obsidian `getLanguage()`, remove direct `innerHTML` writes, avoid console logging, remove plugin-id-prefixed command IDs, use `setCssProps`, and drop the `builtin-modules` dependency.
+- `docs/` is no longer tracked in the repository (kept local only).
+- Added this changelog.
 
 ## [0.1.0] - 2026-11-12
 
