@@ -50,6 +50,5 @@ Desktop.ini
 *.swo
 *~
 
-# Optional: keep local product/development docs out of the repo (HoverBar-style).
-# Uncomment the next line if you do NOT want to publish docs/.
-# /docs/
+# Local product/development documents. Do not publish this directory.
+/docs/
