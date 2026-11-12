@@ -1,0 +1,240 @@
+/* SlipStream — 卡片流视图样式（全部使用 Obsidian CSS 变量） */
+
+.slipstream-root {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+}
+
+/* 顶部工具栏 */
+.slipstream-toolbar,
+.slipstream-sourcebar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--background-modifier-border);
+  flex-wrap: wrap;
+}
+
+.slipstream-sourcebar-title {
+  font-weight: var(--font-semibold);
+  margin-right: auto;
+}
+
+.slipstream-toolbar input[type="text"] {
+  flex: 1;
+  min-width: 80px;
+}
+
+.slipstream-btn {
+  cursor: pointer;
+  padding: 2px 8px;
+  border-radius: var(--radius-s);
+  border: 1px solid var(--background-modifier-border);
+  background: var(--background-secondary);
+  color: var(--text-normal);
+  font-size: var(--font-ui-small);
+}
+
+.slipstream-btn.is-active {
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+  border-color: var(--interactive-accent);
+}
+
+/* 卡片流容器 */
+.slipstream-stream {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px;
+  scroll-behavior: smooth;
+}
+
+.slipstream-card {
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-m);
+  background: var(--background-primary);
+  margin-bottom: 10px;
+  overflow: hidden;
+}
+
+.slipstream-card.is-pinned {
+  border-color: var(--interactive-accent);
+}
+
+.slipstream-card-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  background: var(--background-secondary);
+  cursor: pointer;
+  user-select: none;
+}
+
+.slipstream-card-title {
+  font-weight: var(--font-semibold);
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.slipstream-card-meta {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+}
+
+.slipstream-card-actions {
+  display: flex;
+  gap: 4px;
+}
+
+.slipstream-card-actions .slipstream-btn {
+  padding: 0 6px;
+  line-height: 1.6;
+}
+
+.slipstream-card-body {
+  position: relative;
+  padding: 8px 12px 8px 26px;
+  font-size: calc(var(--font-text-size) * var(--slipstream-font-scale, 1));
+}
+
+.slipstream-card.is-collapsed .slipstream-card-body {
+  display: none;
+}
+
+.slipstream-block {
+  position: relative;
+}
+
+.slipstream-block.is-drop-target {
+  outline: 2px solid var(--interactive-accent);
+  outline-offset: 1px;
+  border-radius: var(--radius-s);
+}
+
+/* 拖拽手柄 */
+.slipstream-drag-handle {
+  position: absolute;
+  left: 4px;
+  width: 16px;
+  height: 20px;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  cursor: grab;
+  color: var(--text-muted);
+  border-radius: var(--radius-s);
+  user-select: none;
+  font-size: 12px;
+}
+
+.slipstream-drag-handle::before {
+  content: "⠿";
+}
+
+.slipstream-drag-handle.is-visible {
+  display: flex;
+}
+
+.slipstream-drag-handle:hover {
+  color: var(--text-normal);
+  background: var(--background-modifier-hover);
+}
+
+/* 摘要模式高亮 */
+.slipstream-excerpt {
+  color: var(--text-normal);
+}
+
+.slipstream-highlight {
+  background: var(--text-highlight-bg);
+  border-radius: 2px;
+  padding: 0 1px;
+}
+
+/* 状态视图 */
+.slipstream-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 40px 16px;
+  color: var(--text-muted);
+  text-align: center;
+}
+
+.slipstream-skeleton {
+  height: 64px;
+  margin-bottom: 10px;
+  border-radius: var(--radius-m);
+  background: linear-gradient(
+    90deg,
+    var(--background-secondary) 25%,
+    var(--background-modifier-hover) 37%,
+    var(--background-secondary) 63%
+  );
+  background-size: 400% 100%;
+  animation: slipstream-shimmer 1.4s ease infinite;
+}
+
+@keyframes slipstream-shimmer {
+  0% { background-position: 100% 50%; }
+  100% { background-position: 0 50%; }
+}
+
+/* 底部状态栏 */
+.slipstream-statusbar {
+  display: flex;
+  gap: 12px;
+  padding: 4px 10px;
+  border-top: 1px solid var(--background-modifier-border);
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+}
+
+.slipstream-statusbar .slipstream-status-link {
+  cursor: pointer;
+  color: var(--text-accent);
+}
+
+/* 引用历史面板 */
+.slipstream-history-list {
+  max-height: 60vh;
+  overflow-y: auto;
+}
+
+.slipstream-history-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px;
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.slipstream-history-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.slipstream-history-title {
+  font-weight: var(--font-semibold);
+}
+
+.slipstream-history-snippet {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .slipstream-stream { scroll-behavior: auto; }
+  .slipstream-skeleton { animation: none; }
+}
