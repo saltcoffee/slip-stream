@@ -97,7 +97,7 @@ export class CardView {
   async ensureRendered(): Promise<void> {
     if (this.rendered || this.rendering) return;
     this.rendering = true;
-    this.bodyEl.style.minHeight = "";
+    this.bodyEl.setCssProps({ "min-height": "" });
     try {
       this.component = new Component();
       this.component.load();
@@ -128,7 +128,7 @@ export class CardView {
   unloadBody(): void {
     if (!this.rendered) return;
     const height = this.bodyEl.offsetHeight;
-    this.bodyEl.style.minHeight = `${height}px`;
+    this.bodyEl.setCssProps({ "min-height": `${height}px` });
     this.component?.unload();
     this.component = undefined;
     this.bodyEl.empty();
