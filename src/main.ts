@@ -45,7 +45,10 @@ export default class SlipStreamPlugin extends Plugin {
     this.logger = new Logger(() => this.settings.debug);
     this.gateway = new VaultGateway(this.app);
     this.renderService = new MarkdownRenderService(this.app);
-    this.blockIds = new BlockIdService(this.app, (path) => this.suppressOnce(path));
+    this.blockIds = new BlockIdService(this.app, (path) => {
+      this.suppressOnce(path);
+      this.scheduleRefresh();
+    });
     this.cite = new CitationEngine(this);
     this.history = new CitationHistoryService(this.app, this);
     this.history.load((this.rawData as { history?: CitationRecord[] } | undefined)?.history);

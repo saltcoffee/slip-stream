@@ -60,9 +60,11 @@ export interface DragPayload {
   startLine: number;
   endLine: number;
   content: string;
+  /** 渲染时捕获的原始块快照；跨块选区不提供精确锚点。 */
+  sourceContent?: string;
   title: string;
   mode: "block" | "selection";
-  blockType?: BlockKind;
+  blockType?: RenderUnit["type"];
   heading?: string;
 }
 

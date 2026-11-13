@@ -1,5 +1,6 @@
 import type { TFile } from "obsidian";
 import type { VaultGateway } from "../infra/VaultGateway";
+import type { SourceBlock } from "./types";
 
 export interface CardModel {
   file: TFile;
@@ -51,16 +52,13 @@ export function buildCardModel(gateway: VaultGateway, file: TFile): CardModel {
   };
 }
 
-/** 摘要抽取：前 N 字 + 高亮 + Callout。 */
-export function extractSnippet(
-  source: string,
-  excerptLength: number,
-  includeHighlights: boolean,
-  includeCallouts: boolean,
-  calloutLimit: number
-): { excerpt: string; highlights: string[]; callouts: string[]; wordCount: number } {
-  const lines = source.split("\n");
-  const plain = source
+export interface Snippet {
+  text: string;
+  block: SourceBlock;
+}
+
+function snippetText(source: string): string {
+  return source
     .replace(/^---\n[\s\S]*?\n---\n?/, "")
     .replace(/^\s{0,3}#{1,6}\s+.*$/gm, "")
     .replace(/^>\s*\[![^\]]+\][+-]?\s*.*$/gm, "")
@@ -71,19 +69,36 @@ export function extractSnippet(
     .replace(/\s*\^[A-Za-z0-9-]{4,}\s*$/gm, "")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
+}
 
-  const highlights: string[] = [];
+/** 摘要在抽取时保留原始块，避免用清理后的展示文本反查源码。 */
+export function extractSnippet(
+  source: string,
+  blocks: SourceBlock[],
+  excerptLength: number,
+  includeHighlights: boolean,
+  includeCallouts: boolean,
+  calloutLimit: number
+): { excerpt?: Snippet; highlights: Snippet[]; callouts: Snippet[]; wordCount: number } {
+  const lines = source.split("\n");
+  const blockAt = (line: number) => blocks.find((b) => b.startLine <= line && line < b.endLine);
+  const highlights: Snippet[] = [];
   if (includeHighlights) {
-    const re = /==([^=\n]+)==/g;
-    let m: RegExpExecArray | null;
-    while ((m = re.exec(source)) !== null) highlights.push(m[1].trim());
+    lines.forEach((line, index) => {
+      for (const match of line.matchAll(/==([^=\n]+)==/g)) {
+        const block = blockAt(index);
+        if (block) highlights.push({ text: match[1].trim(), block });
+      }
+    });
   }
 
-  const callouts: string[] = [];
+  const callouts: Snippet[] = [];
   if (includeCallouts) {
     for (let i = 0; i < lines.length; i++) {
       const start = /^>\s*\[![^\]]+\][+-]?\s*(.*)$/.exec(lines[i]);
       if (!start) continue;
+      const block = blockAt(i);
+      if (!block) continue;
       const parts = [start[1]];
       let j = i + 1;
       while (j < lines.length && /^>/.test(lines[j])) {
@@ -91,14 +106,19 @@ export function extractSnippet(
         j++;
       }
       const text = parts.join(" ").replace(/\s+/g, " ").trim();
-      if (text) callouts.push(text.slice(0, calloutLimit));
+      if (text) callouts.push({ text: text.slice(0, calloutLimit), block });
       i = j - 1;
     }
   }
 
-  const firstParagraph =
-    plain.split(/\n\s*\n/).find((part) => part.trim().length > 0) ?? plain;
-  const excerpt = firstParagraph.slice(0, excerptLength);
-  const wordCount = plain.replace(/\s+/g, "").length;
+  let excerpt: Snippet | undefined;
+  for (const block of blocks) {
+    const text = snippetText(block.content).split(/\n\s*\n/)[0].slice(0, excerptLength);
+    if (text) {
+      excerpt = { text, block };
+      break;
+    }
+  }
+  const wordCount = snippetText(source).replace(/\s+/g, "").length;
   return { excerpt, highlights, callouts, wordCount };
 }

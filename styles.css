@@ -99,6 +99,7 @@
 
 .slipstream-card-body {
   position: relative;
+  user-select: text;
   padding: 8px 12px 8px 26px;
   min-height: var(--slipstream-min-height, 0);
   font-size: calc(var(--font-text-size) * var(--slipstream-font-scale, 1));

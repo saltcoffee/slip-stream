@@ -76,6 +76,7 @@ const DICT: Record<string, Entry> = {
 
   "notice.inserted": { zh: "已插入引用", en: "Citation inserted" },
   "notice.copied": { zh: "已复制引用", en: "Citation copied" },
+  "notice.copyFailed": { zh: "复制引用失败，请重试", en: "Failed to copy citation. Try again." },
   "notice.duplicate": { zh: "该段落已引用过", en: "Already cited this block" },
   "notice.noEditor": { zh: "请先在编辑模式打开一篇笔记", en: "Open a note in edit mode first" },
   "notice.blockStale": { zh: "来源已变化，改为文件级链接", en: "Source changed; inserted file-level link" },

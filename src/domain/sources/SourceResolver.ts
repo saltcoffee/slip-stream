@@ -10,6 +10,7 @@ export interface SourceContext {
   gateway: VaultGateway;
   /** 唤起视图时确定的主文档（backlinks/outlinks 锚点） */
   anchorFile?: TFile;
+  excludeGlobs?: string[];
 }
 
 export interface SourceResolver {
