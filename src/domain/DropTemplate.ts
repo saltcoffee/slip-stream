@@ -1,9 +1,9 @@
 import type { Settings } from "../settings/settings";
 
 export const TEMPLATES: Record<string, string> = {
-  A: "> {{content}}\n> — [[{{filename}}#^{{blockId}}|{{title}}]]",
-  B: "{{content}} ([[{{filename}}]])",
-  C: "![[{{filename}}#^{{blockId}}]]",
+  A: "> {{content}}\n> — [[{{path}}#^{{blockId}}|{{title}}]]",
+  B: "{{content}} ([[{{path}}]])",
+  C: "![[{{path}}#^{{blockId}}]]",
   D: "",
 };
 

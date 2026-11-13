@@ -59,12 +59,16 @@ export class DragHandle {
 
     let mode: DragPayload["mode"] = "block";
     let content = lines.slice(start, end).join("\n");
+    let sourceContent: string | undefined = content;
 
     const sel = window.getSelection();
     const selText = sel && sel.rangeCount > 0 ? sel.toString().trim() : "";
     if (selText && sel?.anchorNode && bodyEl.contains(sel.anchorNode)) {
       mode = "selection";
       content = selText;
+      if (!block.contains(sel.anchorNode) || !sel.focusNode || !block.contains(sel.focusNode)) {
+        sourceContent = undefined;
+      }
     }
 
     return {
@@ -72,6 +76,7 @@ export class DragHandle {
       startLine: start,
       endLine: end,
       content,
+      sourceContent,
       title: card.title,
       mode,
       blockType: (block.getAttribute("data-block-type") as DragPayload["blockType"]) ?? undefined,

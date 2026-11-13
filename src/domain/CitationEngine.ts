@@ -3,6 +3,7 @@ import { Notice, TFile } from "obsidian";
 import type { DragPayload } from "./types";
 import type SlipStreamPlugin from "../main";
 import { buildCitation, resolveTemplateId } from "./DropTemplate";
+import { stripInlineBlockId } from "./BlockReference";
 import { t } from "../util/i18n";
 
 interface BuiltCitation {
@@ -56,7 +57,8 @@ export class CitationEngine {
     try {
       await navigator.clipboard.writeText(text);
     } catch {
-      // 忽略剪贴板失败
+      new Notice(t("notice.copyFailed"));
+      return;
     }
     this.recentlyCited.add(text);
     await this.record(payload, blockId, text);
@@ -66,21 +68,23 @@ export class CitationEngine {
   private async build(payload: DragPayload): Promise<BuiltCitation> {
     let blockId: string | undefined;
     const allowed = ["paragraph", "list_item", "list", "blockquote", "callout"];
-    const typeOk = !payload.blockType || allowed.includes(payload.blockType);
-    if (this.plugin.settings.blockPrecision && typeOk) {
-      // 划词模式内容与整块源码不一致，不做原文比对，直接锚定该块
-      const expected = payload.mode === "block" ? payload.content : undefined;
+    const blockType = payload.blockType;
+    const typeOk = blockType !== undefined && allowed.includes(blockType);
+    if (this.plugin.settings.blockPrecision && typeOk && typeof payload.sourceContent === "string") {
       blockId = await this.plugin.blockIds.ensure(
         payload.filePath,
         payload.startLine,
         payload.endLine,
-        expected
+        payload.sourceContent,
+        blockType
       );
     }
     const file = this.plugin.app.vault.getAbstractFileByPath(payload.filePath);
     const filename = file instanceof TFile ? file.basename : payload.title;
     const text = buildCitation(this.plugin.settings, {
-      content: payload.content,
+      content: payload.mode === "block" && blockId && blockType
+        ? stripInlineBlockId(payload.content, blockType, blockId)
+        : payload.content,
       filename,
       path: payload.filePath,
       title: payload.title,

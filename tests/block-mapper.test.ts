@@ -30,4 +30,19 @@ describe("BlockMapper", () => {
     expect(blocks[0].hasBlockId).toBe(true);
     expect(blocks[0].blockId).toBe("abc123");
   });
+
+  it("keeps a parent list item's continuation after its nested list", () => {
+    const source = "- Parent\n  - Child\n\n  Parent continuation";
+    const blocks = mapBlocks(fakeApp, fakeFile, source);
+    const units = groupRenderUnits(blocks, source.split("\n"));
+    expect(units).toHaveLength(1);
+    expect(units[0].content).toBe(source);
+    expect(units[0].endLine).toBe(4);
+  });
+
+  it("does not expose standalone block markers as draggable paragraphs", () => {
+    const source = "> [!note] Text\n> Body\n\n^abc123\n\nNext paragraph";
+    const blocks = mapBlocks(fakeApp, fakeFile, source);
+    expect(blocks.map((b) => b.content)).toEqual(["> [!note] Text\n> Body", "Next paragraph"]);
+  });
 });

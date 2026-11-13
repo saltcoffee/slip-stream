@@ -44,7 +44,7 @@ export class FolderSource implements SourceResolver {
       }
     }
     const includeSub = spec.options?.includeSubfolders ?? true;
-    const globs = spec.options?.excludeGlobs ?? [];
+    const globs = [...(ctx.excludeGlobs ?? []), ...(spec.options?.excludeGlobs ?? [])];
     return ctx.gateway.getMarkdownFiles().filter((f) => {
       if (effectiveBase !== "/" && !f.path.startsWith(effectiveBase + "/")) return false;
       if (!includeSub) {

@@ -1,6 +1,7 @@
 import { Component } from "obsidian";
 import type { CardModel } from "../domain/CardModel";
 import { extractSnippet } from "../domain/CardModel";
+import type { Snippet } from "../domain/CardModel";
 import { groupRenderUnits, mapBlocks } from "../domain/BlockMapper";
 import type { Density } from "../domain/types";
 import type SlipStreamPlugin from "../main";
@@ -48,7 +49,9 @@ export class CardView {
     });
     this.metaEl = header.createSpan({
       cls: "slipstream-card-meta",
-      text: t("card.words", { n: card.wordCount }),
+      text: opts.density === "compact" && card.wordCount === 0
+        ? ""
+        : t("card.words", { n: card.wordCount }),
     });
 
     const actions = header.createDiv({ cls: "slipstream-card-actions" });
@@ -92,10 +95,12 @@ export class CardView {
   setCollapsed(collapsed: boolean): void {
     this.el.toggleClass("is-collapsed", collapsed);
     this.collapseEl.setText(collapsed ? "▶" : "▼");
+    if (!collapsed && this.opts.density === "compact") void this.ensureRendered();
   }
 
   async ensureRendered(): Promise<void> {
     if (this.rendered || this.rendering) return;
+    if (this.opts.density === "compact" && this.el.hasClass("is-collapsed")) return;
     this.rendering = true;
     this.bodyEl.setCssProps({ "--slipstream-min-height": "" });
     try {
@@ -164,9 +169,9 @@ export class CardView {
   private renderSnippet(source: string): void {
     const s = this.opts.plugin.settings;
     const blocks = mapBlocks(this.opts.plugin.app, this.opts.card.file, source);
-    const first = blocks[0] ?? { startLine: 0, endLine: 1 };
     const { excerpt, highlights, callouts, wordCount } = extractSnippet(
       source,
+      blocks,
       s.excerptLength,
       s.snippetIncludeHighlights,
       s.snippetIncludeCallouts,
@@ -175,19 +180,17 @@ export class CardView {
     this.opts.card.wordCount = wordCount;
     this.metaEl.setText(t("card.words", { n: wordCount }));
 
-    const rangeOf = (text: string) => blocks.find((b) => b.content.includes(text)) ?? first;
-
     if (excerpt) {
-      this.addTextBlock(excerpt, rangeOf(excerpt), "slipstream-excerpt");
+      this.addTextBlock(excerpt, "slipstream-excerpt");
     }
     if (s.snippetIncludeHighlights) {
       for (const h of highlights) {
-        this.addTextBlock(h, rangeOf(h), "slipstream-highlight");
+        this.addTextBlock(h, "slipstream-highlight");
       }
     }
     if (s.snippetIncludeCallouts) {
       for (const c of callouts) {
-        this.addTextBlock(c, rangeOf(c), "slipstream-callout");
+        this.addTextBlock(c, "slipstream-callout");
       }
     }
     if (!excerpt && highlights.length === 0 && callouts.length === 0) {
@@ -196,15 +199,14 @@ export class CardView {
   }
 
   private addTextBlock(
-    text: string,
-    range: { startLine: number; endLine: number },
+    snippet: Snippet,
     cls: string
   ): void {
     const wrapper = this.bodyEl.createDiv({ cls: "slipstream-block" });
-    wrapper.setAttribute("data-src-start", String(range.startLine));
-    wrapper.setAttribute("data-src-end", String(range.endLine));
-    wrapper.setAttribute("data-block-type", "paragraph");
-    wrapper.createDiv({ cls, text });
+    wrapper.setAttribute("data-src-start", String(snippet.block.startLine));
+    wrapper.setAttribute("data-src-end", String(snippet.block.endLine));
+    wrapper.setAttribute("data-block-type", snippet.block.type);
+    wrapper.createDiv({ cls, text: snippet.text });
   }
 
   private openFile(): void {

@@ -63,6 +63,7 @@ export function mapBlocks(app: App, file: TFile, source: string): SourceBlock[] 
     const startLine = map[0] + fmEnd;
     const endLine = map[1] + fmEnd;
     const raw = lines.slice(startLine, endLine).join("\n");
+    if (t.type === "paragraph_open" && /^\^[A-Za-z0-9-]+$/.test(raw.trim())) continue;
     const m = raw.match(/\s\^([A-Za-z0-9-]+)\s*$/);
     out.push({
       startLine,
@@ -88,7 +89,7 @@ export function groupRenderUnits(blocks: SourceBlock[], lines: string[]): Render
       let end = b.endLine;
       while (i < blocks.length && blocks[i].type === "list_item") {
         items.push({ startLine: blocks[i].startLine, endLine: blocks[i].endLine });
-        end = blocks[i].endLine;
+        end = Math.max(end, blocks[i].endLine);
         i++;
       }
       units.push({

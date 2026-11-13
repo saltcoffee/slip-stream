@@ -24,6 +24,7 @@ interface StreamState {
   filter: string;
   showHidden: boolean;
   collapsed: Set<string>;
+  compactExpanded: Set<string>;
   dismissed: Set<string>;
   pinned: Set<string>;
   customOrder: string[];
@@ -67,6 +68,7 @@ export class CardStreamController implements ToolbarHost, SourceBarHost, CardHos
       filter: typeof s.filter === "string" ? s.filter : "",
       showHidden: typeof s.showHidden === "boolean" ? s.showHidden : this.plugin.settings.showDismissed,
       collapsed: new Set(Array.isArray(s.collapsed) ? (s.collapsed as string[]) : []),
+      compactExpanded: new Set(Array.isArray(s.compactExpanded) ? (s.compactExpanded as string[]) : []),
       dismissed: new Set(Array.isArray(s.dismissed) ? (s.dismissed as string[]) : []),
       pinned: new Set(Array.isArray(s.pinned) ? (s.pinned as string[]) : []),
       customOrder: Array.isArray(s.customOrder) ? (s.customOrder as string[]) : [],
@@ -82,6 +84,7 @@ export class CardStreamController implements ToolbarHost, SourceBarHost, CardHos
       filter: this.state.filter,
       showHidden: this.state.showHidden,
       collapsed: Array.from(this.state.collapsed),
+      compactExpanded: Array.from(this.state.compactExpanded),
       dismissed: Array.from(this.state.dismissed),
       pinned: Array.from(this.state.pinned),
       customOrder: this.state.customOrder,
@@ -102,7 +105,7 @@ export class CardStreamController implements ToolbarHost, SourceBarHost, CardHos
       this.streamEl,
       this,
       () => this.state.density,
-      (path) => this.state.collapsed.has(path),
+      (path) => this.isCollapsed(path),
       (path) => this.state.pinned.has(path)
     );
     await this.refreshData();
@@ -143,6 +146,7 @@ export class CardStreamController implements ToolbarHost, SourceBarHost, CardHos
         app: this.plugin.app,
         gateway: this.plugin.gateway,
         anchorFile: anchor,
+        excludeGlobs: this.plugin.settings.excludeGlobs.split(",").map((g) => g.trim()).filter(Boolean),
       });
       if (files.length > this.plugin.settings.collectionLimit) {
         files = files.slice(0, this.plugin.settings.collectionLimit);
@@ -220,9 +224,22 @@ export class CardStreamController implements ToolbarHost, SourceBarHost, CardHos
   }
 
   toggleCollapse(card: CardModel): void {
-    if (this.state.collapsed.has(card.path)) this.state.collapsed.delete(card.path);
-    else this.state.collapsed.add(card.path);
+    if (this.isCollapsed(card.path)) {
+      this.state.collapsed.delete(card.path);
+      if (this.state.density === "compact") this.state.compactExpanded.add(card.path);
+    } else {
+      this.state.collapsed.add(card.path);
+      this.state.compactExpanded.delete(card.path);
+    }
     this.scheduleSave();
+  }
+
+  private isCollapsed(path: string): boolean {
+    return this.state.collapsed.has(path) || (
+      this.state.density === "compact" &&
+      this.plugin.settings.compactDefaultCollapsed &&
+      !this.state.compactExpanded.has(path)
+    );
   }
 
   togglePin(card: CardModel): void {
@@ -251,8 +268,10 @@ export class CardStreamController implements ToolbarHost, SourceBarHost, CardHos
       startLine: b ? b.startLine : 0,
       endLine: b ? b.endLine : 1,
       content: b ? b.content : source.slice(0, 200),
+      sourceContent: b?.content,
       title: card.title,
       mode: "block",
+      blockType: b?.type,
     });
   }
 
@@ -297,12 +316,18 @@ export class CardStreamController implements ToolbarHost, SourceBarHost, CardHos
     return this.state.showHidden;
   }
   collapseAll(): void {
-    for (const c of this.orderedCards()) this.state.collapsed.add(c.path);
+    for (const c of this.orderedCards()) {
+      this.state.collapsed.add(c.path);
+      this.state.compactExpanded.delete(c.path);
+    }
     this.stream?.collapseAll(true);
     this.scheduleSave();
   }
   expandAll(): void {
     this.state.collapsed.clear();
+    if (this.state.density === "compact") {
+      for (const c of this.cards) this.state.compactExpanded.add(c.path);
+    }
     this.stream?.collapseAll(false);
     this.scheduleSave();
   }
