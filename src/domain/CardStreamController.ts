@@ -2,7 +2,6 @@ import type { App, TFile } from "obsidian";
 import { Notice } from "obsidian";
 import type { CardModel } from "./CardModel";
 import { buildCardModel } from "./CardModel";
-import { mapBlocks } from "./BlockMapper";
 import type { Density, SortKey, SourceSpec } from "./types";
 import { createResolver } from "./sources/SourceResolver";
 import type SlipStreamPlugin from "../main";
@@ -14,6 +13,9 @@ import { SourceBar } from "../view/SourceBar";
 import type { SourceBarHost } from "../view/SourceBar";
 import type { CardHost } from "../view/CardView";
 import { renderEmpty, renderError, renderSkeleton } from "../view/states";
+import { TargetBar } from "../view/TargetBar";
+import { CitationError } from "./citationTypes";
+import type { TargetBinding } from "./citationTypes";
 import { t } from "../util/i18n";
 
 interface StreamState {
@@ -47,6 +49,11 @@ export class CardStreamController implements ToolbarHost, SourceBarHost, CardHos
   private statusEl!: HTMLElement;
   private sourceBar?: SourceBar;
   private saveTimer: number | null = null;
+  private binding?: TargetBinding;
+  private targetBar?: TargetBar;
+  private feedbackEl!: HTMLElement;
+  private dataGeneration = 0;
+  private destroyed = false;
 
   private scheduleSave(): void {
     if (this.saveTimer !== null) window.clearTimeout(this.saveTimer);
@@ -93,12 +100,17 @@ export class CardStreamController implements ToolbarHost, SourceBarHost, CardHos
 
   async mount(root: HTMLElement): Promise<void> {
     this.stream?.destroy();
+    this.targetBar?.destroy();
     root.empty();
     root.addClass("slipstream-root");
+    this.targetBar = new TargetBar(this.plugin.app, this.plugin.editors, () => this.binding,
+      (editorId) => this.bindTarget(editorId), () => this.plugin.settings.blockPrecision && !this.plugin.store.readOnly, () => this.plugin.openCitationSettings());
+    root.appendChild(this.targetBar.el);
     root.appendChild(new Toolbar(this).el);
     this.sourceBar = new SourceBar(this);
     root.appendChild(this.sourceBar.el);
     this.streamEl = root.createDiv({ cls: "slipstream-stream" });
+    this.feedbackEl = root.createDiv({ cls: "slipstream-operation-feedback", attr: { role: "status", "aria-live": "polite" } });
     this.statusEl = root.createDiv({ cls: "slipstream-statusbar" });
     this.stream = new CardStream(
       this.plugin,
@@ -112,6 +124,9 @@ export class CardStreamController implements ToolbarHost, SourceBarHost, CardHos
   }
 
   destroy(): void {
+    this.destroyed = true; this.dataGeneration++;
+    this.targetBar?.destroy();
+    if (this.binding) this.plugin.editors.release(this.binding);
     if (this.saveTimer !== null) {
       window.clearTimeout(this.saveTimer);
       this.saveTimer = null;
@@ -125,10 +140,12 @@ export class CardStreamController implements ToolbarHost, SourceBarHost, CardHos
   }
 
   refreshSilent(): void {
+    if (this.plugin.citationBusy > 0) { this.plugin.scheduleRefresh(); return; }
     void this.refreshData(true);
   }
 
   private async refreshData(silent = false): Promise<void> {
+    const generation = ++this.dataGeneration;
     const source = this.state.source;
     if (!source) {
       renderEmpty(this.streamEl, t("state.noSource"));
@@ -148,13 +165,15 @@ export class CardStreamController implements ToolbarHost, SourceBarHost, CardHos
         anchorFile: anchor,
         excludeGlobs: this.plugin.settings.excludeGlobs.split(",").map((g) => g.trim()).filter(Boolean),
       });
+      if (this.destroyed || generation !== this.dataGeneration) return;
       if (files.length > this.plugin.settings.collectionLimit) {
         files = files.slice(0, this.plugin.settings.collectionLimit);
       }
       this.cards = files.map((f) => buildCardModel(this.plugin.gateway, f));
       this.renderCards();
     } catch (e) {
-      this.plugin.logger.error("resolve source failed", e);
+      if (this.destroyed || generation !== this.dataGeneration) return;
+      this.plugin.logger.error("resolve source failed");
       renderError(this.streamEl, t("state.error"), () => this.refresh(), t("common.retry"));
       this.updateStatus();
     }
@@ -220,7 +239,7 @@ export class CardStreamController implements ToolbarHost, SourceBarHost, CardHos
 
   // ---- CardHost ----
   async readSource(card: CardModel): Promise<string> {
-    return this.plugin.gateway.read(card.file);
+    return this.plugin.editors.readSource(this.plugin.editors.fileRef(card.file));
   }
 
   toggleCollapse(card: CardModel): void {
@@ -255,24 +274,20 @@ export class CardStreamController implements ToolbarHost, SourceBarHost, CardHos
     this.renderCards();
   }
 
-  copy(card: CardModel): void {
-    void this.copyAsync(card);
+  reselectSource(card: CardModel): void {
+    this.state.density = "full";
+    this.state.collapsed.delete(card.path);
+    this.scheduleSave();
+    this.renderCards();
   }
-
-  private async copyAsync(card: CardModel): Promise<void> {
-    const source = await this.plugin.gateway.read(card.file);
-    const blocks = mapBlocks(this.plugin.app, card.file, source);
-    const b = blocks[0];
-    await this.plugin.cite.copy({
-      filePath: card.path,
-      startLine: b ? b.startLine : 0,
-      endLine: b ? b.endLine : 1,
-      content: b ? b.content : source.slice(0, 200),
-      sourceContent: b?.content,
-      title: card.title,
-      mode: "block",
-      blockType: b?.type,
-    });
+  getTarget(): TargetBinding | undefined { return this.binding; }
+  getCitationFeedback(): HTMLElement { return this.feedbackEl; }
+  refreshCitationContext(): void { this.targetBar?.render(); this.stream?.refreshCitationContext(); }
+  bindTarget(editorId: string): void {
+    try {
+      this.binding = this.plugin.editors.bind(editorId, this.binding);
+      this.refreshCitationContext();
+    } catch (error) { this.feedbackEl.setText(t(`error.${error instanceof CitationError ? error.code : "TARGET_MISSING"}`)); }
   }
 
   // ---- ToolbarHost ----

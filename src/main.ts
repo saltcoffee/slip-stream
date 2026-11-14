@@ -2,42 +2,48 @@ import {
   Editor,
   MarkdownView,
   Menu,
-  Modal,
   Notice,
   Plugin,
-  Setting,
   TFile,
   TFolder,
+  setTooltip,
 } from "obsidian";
-import { DRAG_SENTINEL, MIME_SLIPSTREAM, VIEW_TYPE_SLIPSTREAM } from "./constants";
-import { DEFAULT_SETTINGS } from "./settings/settings";
+import { VIEW_TYPE_SLIPSTREAM } from "./constants";
+import type { Command } from "obsidian";
 import type { Settings } from "./settings/settings";
 import { SlipStreamSettingsTab } from "./settings/SettingsTab";
 import { VaultGateway } from "./infra/VaultGateway";
 import { MarkdownRenderService } from "./infra/MarkdownRenderService";
 import { BlockIdService } from "./infra/BlockIdService";
 import { CitationEngine } from "./domain/CitationEngine";
-import { CitationHistoryService } from "./domain/CitationHistory";
-import type { CitationRecord, DragPayload, SourceSpec } from "./domain/types";
+import { CitationRecordsService } from "./domain/CitationRecords";
+import { PluginDataStore } from "./infra/PluginDataStore";
+import { EditorGateway } from "./infra/EditorGateway";
+import { CitationLinkService } from "./infra/CitationLinkService";
+import { HistoryModal } from "./view/HistoryModal";
+import type { CitationError, TargetTicket } from "./domain/citationTypes";
+import type { SourceSpec } from "./domain/types";
 import { SlipStreamView } from "./view/SlipStreamView";
 import { Logger } from "./util/logger";
 import { t, setLanguage } from "./util/i18n";
 
 export default class SlipStreamPlugin extends Plugin {
+  store!: PluginDataStore;
   declare settings: Settings;
+  editors!: EditorGateway;
   gateway!: VaultGateway;
   renderService!: MarkdownRenderService;
   blockIds!: BlockIdService;
   cite!: CitationEngine;
-  history!: CitationHistoryService;
+  history!: CitationRecordsService;
   logger!: Logger;
 
-  /** DragHandle 在 dragstart 时置真，用于 dragover 兜底 */
-  isDragging = false;
+  citationBusy = 0;
+  readonly dragTokens = new Map<string, (ticket?: TargetTicket, error?: CitationError) => void>();
 
-  private rawData: unknown = undefined;
-  private suppressed = new Map<string, number>();
   private refreshTimer: number | null = null;
+  private commandIds: string[] = [];
+  private ribbon?: HTMLElement;
 
   async onload(): Promise<void> {
     await this.loadSettings();
@@ -45,25 +51,32 @@ export default class SlipStreamPlugin extends Plugin {
     this.logger = new Logger(() => this.settings.debug);
     this.gateway = new VaultGateway(this.app);
     this.renderService = new MarkdownRenderService(this.app);
-    this.blockIds = new BlockIdService(this.app, (path) => {
-      this.suppressOnce(path);
-      this.scheduleRefresh();
-    });
-    this.cite = new CitationEngine(this);
-    this.history = new CitationHistoryService(this.app, this);
-    this.history.load((this.rawData as { history?: CitationRecord[] } | undefined)?.history);
+    this.editors = new EditorGateway(this.app, () => this.settings.selectionBehavior, (token) => token ? this.dragTokens.has(token) : this.dragTokens.size > 0);
+    this.blockIds = new BlockIdService(this.app, this.editors, () => this.scheduleRefresh());
+    this.history = new CitationRecordsService(this.store);
+    this.cite = new CitationEngine({ settings: () => this.settings,
+      consentAccepted: () => this.store.blockIdConsentAccepted,
+      anchorWritesEnabled: () => !this.store.readOnly,
+      sources: this.blockIds, editors: this.editors, links: new CitationLinkService(this.app, this.editors), records: this.history });
+    this.editors.onDrop = (token, ticket, error) => {
+      const submit = this.dragTokens.get(token);
+      this.dragTokens.delete(token);
+      submit?.(ticket, error);
+    };
+    this.registerEditorExtension(this.editors.extension());
 
     this.registerView(VIEW_TYPE_SLIPSTREAM, (leaf) => new SlipStreamView(leaf, this));
     this.addSettingTab(new SlipStreamSettingsTab(this.app, this));
-    this.addRibbonIcon("layers", t("cmd.open"), () => void this.activateView());
+    this.ribbon = this.addRibbonIcon("layers", t("cmd.open"), () => void this.activateView());
 
     this.registerCommands();
     this.registerMenus();
-    this.registerDropHandling();
     this.registerMetadataRefresh();
   }
 
   onunload(): void {
+    this.dragTokens.clear();
+    void this.store?.flush().catch(() => this.logger?.error("pending plugin data could not be saved"));
     if (this.refreshTimer !== null) {
       window.clearTimeout(this.refreshTimer);
       this.refreshTimer = null;
@@ -71,21 +84,31 @@ export default class SlipStreamPlugin extends Plugin {
   }
 
   async loadSettings(): Promise<void> {
-    this.rawData = await this.loadData();
-    const data = this.rawData as { settings?: Partial<Settings> } | undefined;
-    this.settings = Object.assign({}, DEFAULT_SETTINGS, data?.settings ?? {});
+    this.store = new PluginDataStore({ load: () => this.loadData(), save: (data) => this.saveData(data),
+      backup: async (raw) => {
+        const dir = this.manifest.dir;
+        if (!dir) throw new Error("PLUGIN_DIRECTORY_UNAVAILABLE");
+        await this.app.vault.adapter.write(`${dir}/data-backup-${Date.now()}-${crypto.randomUUID()}.json`, JSON.stringify(raw, null, 2));
+      } });
+    await this.store.load();
+    this.settings = this.store.data.settings;
     setLanguage(this.settings.language);
+    if (this.store.warning) new Notice(t(this.store.warning), 0);
   }
 
   /** 语言切换后重建所有打开的 SlipStream 视图文案 */
   relocalizeViews(): void {
+    this.registerCommands();
+    if (this.ribbon) setTooltip(this.ribbon, t("cmd.open"));
     for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_SLIPSTREAM)) {
       (leaf.view as SlipStreamView).relocalize?.();
     }
   }
 
   async persist(): Promise<void> {
-    await this.saveData({ settings: this.settings, history: this.history.serialize() });
+    this.history?.settingsChanged();
+    for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_SLIPSTREAM)) (leaf.view as SlipStreamView).refreshCitationContext();
+    await this.store.save();
   }
 
   async activateView(source?: SourceSpec): Promise<void> {
@@ -110,28 +133,34 @@ export default class SlipStreamPlugin extends Plugin {
     new HistoryModal(this).open();
   }
 
-  suppressOnce(path: string): void {
-    this.suppressed.set(path, Date.now());
-  }
-
-  private isSuppressed(path: string): boolean {
-    const ts = this.suppressed.get(path);
-    if (ts === undefined) return false;
-    if (Date.now() - ts > 2000) {
-      this.suppressed.delete(path);
-      return false;
-    }
-    return true;
+  openCitationSettings(): void {
+    new SlipStreamSettingsTab(this.app, this).openCitationManager();
   }
 
   private registerCommands(): void {
-    this.addCommand({
+    for (const id of this.commandIds) this.removeCommand(id);
+    this.commandIds = [];
+    const addCommand = (command: Command) => {
+      this.commandIds.push(command.id);
+      this.addCommand(command);
+    };
+    addCommand({ id: "set-citation-target", name: t("cmd.setTarget"), editorCallback: (editor) => {
+      const editorId = this.editors.editorId(editor);
+      if (!editorId) { new Notice(t("error.TARGET_READONLY")); return; }
+      for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_SLIPSTREAM)) (leaf.view as SlipStreamView).bindTarget(editorId);
+      if (!this.app.workspace.getLeavesOfType(VIEW_TYPE_SLIPSTREAM).length) {
+        void this.activateView().then(() => {
+          for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_SLIPSTREAM)) (leaf.view as SlipStreamView).bindTarget(editorId);
+        });
+      }
+    } });
+    addCommand({
       id: "open",
       name: t("cmd.open"),
       callback: () => void this.activateView(),
     });
 
-    this.addCommand({
+    addCommand({
       id: "open-folder",
       name: t("cmd.openFolder"),
       checkCallback: (checking) => {
@@ -149,7 +178,7 @@ export default class SlipStreamPlugin extends Plugin {
     });
 
     const linkCommand = (id: string, name: string, kind: "backlinks" | "outlinks") => {
-      this.addCommand({
+      addCommand({
         id,
         name,
         checkCallback: (checking) => {
@@ -165,7 +194,7 @@ export default class SlipStreamPlugin extends Plugin {
     linkCommand("open-backlinks", t("cmd.openBacklinks"), "backlinks");
     linkCommand("open-outlinks", t("cmd.openOutlinks"), "outlinks");
 
-    this.addCommand({
+    addCommand({
       id: "history",
       name: t("cmd.history"),
       callback: () => this.openHistory(),
@@ -211,82 +240,12 @@ export default class SlipStreamPlugin extends Plugin {
     );
   }
 
-  private registerDropHandling(): void {
-    this.registerDomEvent(
-      document,
-      "dragover",
-      (e: DragEvent) => {
-        if (e.dataTransfer?.types.includes(MIME_SLIPSTREAM) || this.isDragging) {
-          e.preventDefault();
-        }
-      },
-      { capture: true }
-    );
-
-    this.registerDomEvent(
-      document,
-      "drop",
-      (e: DragEvent) => {
-        if (!this.isDragging && !e.dataTransfer?.types.includes(MIME_SLIPSTREAM)) return;
-        const payload = this.readPayload(e);
-        if (!payload) return;
-        const editor = this.resolveEditorForDrop(e.target as HTMLElement);
-        if (!editor) {
-          new Notice(t("notice.noEditor"));
-          return;
-        }
-        e.preventDefault();
-        e.stopPropagation();
-        void this.cite.emit(payload, editor, e);
-      },
-      { capture: true }
-    );
-
-    this.registerDomEvent(
-      document,
-      "dragend",
-      () => {
-        this.isDragging = false;
-      },
-      { capture: true }
-    );
-  }
-
-  private readPayload(e: DragEvent): DragPayload | null {
-    const dt = e.dataTransfer;
-    if (!dt) return null;
-    let raw = dt.getData(MIME_SLIPSTREAM);
-    if (!raw) {
-      const plain = dt.getData("text/plain");
-      if (plain.startsWith(DRAG_SENTINEL)) raw = plain.slice(DRAG_SENTINEL.length);
-    }
-    if (!raw) return null;
-    try {
-      return JSON.parse(raw) as DragPayload;
-    } catch {
-      return null;
-    }
-  }
-
-  private resolveEditorForDrop(target: HTMLElement): Editor | null {
-    const cmEl = target.closest(".cm-editor");
-    if (!cmEl) return null;
-    for (const leaf of this.app.workspace.getLeavesOfType("markdown")) {
-      const view = leaf.view;
-      if (view instanceof MarkdownView && view.containerEl.contains(cmEl)) {
-        return view.editor;
-      }
-    }
-    return null;
-  }
-
   private registerMetadataRefresh(): void {
     const schedule = () => this.scheduleRefresh();
 
     this.registerEvent(
       this.app.vault.on("modify", (file) => {
         if (!(file instanceof TFile) || file.extension !== "md") return;
-        if (this.isSuppressed(file.path)) return;
         schedule();
       })
     );
@@ -294,14 +253,13 @@ export default class SlipStreamPlugin extends Plugin {
     this.registerEvent(this.app.vault.on("rename", () => schedule()));
     this.registerEvent(
       this.app.metadataCache.on("changed", (file) => {
-        if (this.isSuppressed(file.path)) return;
         schedule();
       })
     );
   }
 
   /** 防抖刷新：静默期 250ms，避免逐文件变更时反复全量重算 */
-  private scheduleRefresh(): void {
+  scheduleRefresh(): void {
     if (this.app.workspace.getLeavesOfType(VIEW_TYPE_SLIPSTREAM).length === 0) return;
     if (this.refreshTimer !== null) window.clearTimeout(this.refreshTimer);
     this.refreshTimer = window.setTimeout(() => {
@@ -310,65 +268,5 @@ export default class SlipStreamPlugin extends Plugin {
         (leaf.view as SlipStreamView).refreshFromExternal?.();
       }
     }, 250);
-  }
-}
-
-class HistoryModal extends Modal {
-  constructor(private plugin: SlipStreamPlugin) {
-    super(plugin.app);
-  }
-
-  onOpen(): void {
-    const { contentEl } = this;
-    contentEl.empty();
-    new Setting(contentEl).setName(t("history.title")).setHeading();
-
-    const list = contentEl.createDiv({ cls: "slipstream-history-list" });
-    const records = this.plugin.history.list();
-    if (records.length === 0) {
-      list.createDiv({ cls: "slipstream-state", text: t("history.empty") });
-    } else {
-      for (const record of records) {
-        const item = list.createDiv({ cls: "slipstream-history-item" });
-        const main = item.createDiv({ cls: "slipstream-history-main" });
-        main.createDiv({ cls: "slipstream-history-title", text: record.sourcePath });
-        main.createDiv({ cls: "slipstream-history-snippet", text: record.snippet });
-
-        const jump = item.createEl("button", { cls: "slipstream-btn", text: t("history.jump") });
-        jump.addEventListener("click", () => {
-          this.plugin.history.jumpBack(record);
-          this.close();
-        });
-
-        if (record.targetPath) {
-          const targetPath = record.targetPath;
-          const open = item.createEl("button", {
-            cls: "slipstream-btn",
-            text: t("history.openTarget"),
-          });
-          open.addEventListener("click", () => {
-            void this.plugin.app.workspace.openLinkText(targetPath, "", false);
-            this.close();
-          });
-        }
-
-        const recopy = item.createEl("button", {
-          cls: "slipstream-btn",
-          text: t("history.recopy"),
-        });
-        recopy.addEventListener("click", () => {
-          void navigator.clipboard.writeText(record.text ?? record.snippet);
-        });
-      }
-    }
-
-    const clear = contentEl.createEl("button", { cls: "slipstream-btn", text: t("history.clear") });
-    clear.addEventListener("click", () => {
-      void this.plugin.history.clear().then(() => this.close());
-    });
-  }
-
-  onClose(): void {
-    this.contentEl.empty();
   }
 }

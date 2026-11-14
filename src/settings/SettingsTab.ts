@@ -1,6 +1,8 @@
-import { App, PluginSettingTab, Setting } from "obsidian";
+import { App, Modal, Notice, PluginSettingTab, Setting } from "obsidian";
 import type { SettingControl, SettingDefinition } from "obsidian";
 import type SlipStreamPlugin from "../main";
+import { citationPrompt } from "../view/CitationPrompt";
+import { validateSettings } from "../infra/PluginDataStore";
 import { t, setLanguage } from "../util/i18n";
 
 export class SlipStreamSettingsTab extends PluginSettingTab {
@@ -12,6 +14,7 @@ export class SlipStreamSettingsTab extends PluginSettingTab {
   getSettingDefinitions(): SettingDefinition[] {
     const d = (nameKey: string, control: SettingControl): SettingDefinition => ({
       name: t(nameKey),
+      desc: this.description(nameKey),
       control,
     });
     return [
@@ -88,6 +91,7 @@ export class SlipStreamSettingsTab extends PluginSettingTab {
       }),
       d("set.showDismissed", { type: "toggle", key: "showDismissed" }),
       d("set.debug", { type: "toggle", key: "debug" }),
+      { name: t("set.snapshots"), render: (setting) => this.snapshotControls(setting.controlEl) },
     ];
   }
 
@@ -96,12 +100,16 @@ export class SlipStreamSettingsTab extends PluginSettingTab {
   }
 
   async setControlValue(key: string, value: unknown): Promise<void> {
-    (this.plugin.settings as unknown as Record<string, unknown>)[key] = value;
+    if (!Object.hasOwn(this.plugin.settings, key)) return;
+    const validated = validateSettings({ ...this.plugin.settings, [key]: value });
+    if ((validated as unknown as Record<string, unknown>)[key] !== value) return;
+    (this.plugin.settings as unknown as Record<string, unknown>)[key] = (validated as unknown as Record<string, unknown>)[key];
     if (key === "language") {
       setLanguage(this.plugin.settings.language);
       this.plugin.relocalizeViews();
     }
-    await this.plugin.persist();
+    try { await this.plugin.persist(); } catch (error) { new Notice(t("data.saveFailed"), 0); throw error; }
+    if (key === "language") this.update?.();
   }
 
   /** Imperative settings for Obsidian < 1.13 (declarative API not available). */
@@ -149,6 +157,7 @@ export class SlipStreamSettingsTab extends PluginSettingTab {
     ]);
     this.addToggle(containerEl, "set.historyEnabled", "historyEnabled");
     this.addNumber(containerEl, "set.historyLimit", "historyLimit");
+    this.snapshotControls(containerEl);
 
     this.heading(containerEl, "set.performance");
     this.addToggle(containerEl, "set.virtualScroll", "virtualScroll");
@@ -172,6 +181,38 @@ export class SlipStreamSettingsTab extends PluginSettingTab {
     this.addToggle(containerEl, "set.debug", "debug");
   }
 
+  private description(key: string): string {
+    const descriptions: Record<string, string> = { "set.blockPrecision": "set.anchorDesc", "set.dedupe": "set.dedupeDesc", "set.historyEnabled": "set.recordDesc" };
+    return descriptions[key] ? t(descriptions[key]) : "";
+  }
+  openCitationManager(): void {
+    const modal = new Modal(this.app);
+    modal.onOpen = () => {
+      this.heading(modal.contentEl, "set.citation");
+      this.addToggle(modal.contentEl, "set.blockPrecision", "blockPrecision");
+      this.addToggle(modal.contentEl, "set.dedupe", "dedupe");
+      this.addDropdown(modal.contentEl, "set.template", "defaultTemplate", [["A", t("template.A")], ["B", t("template.B")], ["C", t("template.C")], ["D", t("template.D")]]);
+      this.addDropdown(modal.contentEl, "set.selection", "selectionBehavior", [["replace", t("opt.replace")], ["append", t("opt.append")]]);
+      this.addText(modal.contentEl, "set.customTemplate", "customTemplate");
+      this.addToggle(modal.contentEl, "set.historyEnabled", "historyEnabled");
+      this.snapshotControls(modal.contentEl);
+    };
+    modal.open();
+  }
+  private snapshotControls(el: HTMLElement): void {
+    const usage = this.plugin.history.usage;
+    const group = el.createDiv();
+    new Setting(group).setName(t("set.snapshots")).setDesc(t("set.snapshotUsage", { n: usage.count, size: `${(usage.bytes / 1024 / 1024).toFixed(2)} MiB` }))
+      .addButton((button) => button.setButtonText(t("set.clearSnapshots")).onClick(async () => {
+        const choice = await citationPrompt(this.app, t("set.clearSnapshotsConfirm"), [{ id: "clear", label: t("set.clearSnapshots") }]);
+        if (!choice) return;
+        try {
+          await this.plugin.history.clearRelations();
+          const parent = group.parentElement!;
+          group.remove(); this.snapshotControls(parent);
+        } catch { new Notice(t("data.saveFailed"), 0); }
+      }));
+  }
   private heading(el: HTMLElement, key: string): void {
     new Setting(el).setName(t(key)).setHeading();
   }
@@ -182,10 +223,7 @@ export class SlipStreamSettingsTab extends PluginSettingTab {
       dd.addOption("zh", "中文");
       dd.addOption("en", "English");
       dd.setValue(this.plugin.settings.language).onChange(async (value) => {
-        this.plugin.settings.language = value as "auto" | "zh" | "en";
-        setLanguage(this.plugin.settings.language);
-        await this.plugin.persist();
-        this.plugin.relocalizeViews();
+        await this.setControlValue("language", value);
         this.display();
       });
     });
@@ -206,10 +244,9 @@ export class SlipStreamSettingsTab extends PluginSettingTab {
       | "showDismissed"
       | "debug"
   ): void {
-    new Setting(el).setName(t(nameKey)).addToggle((toggle) =>
+    new Setting(el).setName(t(nameKey)).setDesc(this.description(nameKey)).addToggle((toggle) =>
       toggle.setValue(this.plugin.settings[key]).onChange(async (value) => {
-        this.plugin.settings[key] = value;
-        await this.plugin.persist();
+        await this.setControlValue(key, value);
       })
     );
   }
@@ -217,8 +254,7 @@ export class SlipStreamSettingsTab extends PluginSettingTab {
   private addText(el: HTMLElement, nameKey: string, key: "excludeGlobs" | "customTemplate"): void {
     new Setting(el).setName(t(nameKey)).addText((text) =>
       text.setValue(this.plugin.settings[key]).onChange(async (value) => {
-        this.plugin.settings[key] = value;
-        await this.plugin.persist();
+        await this.setControlValue(key, value);
       })
     );
   }
@@ -232,10 +268,7 @@ export class SlipStreamSettingsTab extends PluginSettingTab {
       text.inputEl.type = "number";
       text.setValue(String(this.plugin.settings[key])).onChange(async (value) => {
         const n = Number(value);
-        if (Number.isFinite(n) && n >= 0) {
-          this.plugin.settings[key] = n;
-          await this.plugin.persist();
-        }
+        await this.setControlValue(key, n);
       });
     });
   }
@@ -246,8 +279,7 @@ export class SlipStreamSettingsTab extends PluginSettingTab {
         .setLimits(0.8, 1.6, 0.1)
         .setValue(this.plugin.settings[key])
         .onChange(async (value) => {
-          this.plugin.settings[key] = value;
-          await this.plugin.persist();
+          await this.setControlValue(key, value);
         })
     );
   }
@@ -261,8 +293,7 @@ export class SlipStreamSettingsTab extends PluginSettingTab {
     new Setting(el).setName(t(nameKey)).addDropdown((dd) => {
       for (const [value, label] of options) dd.addOption(value, label);
       dd.setValue(String(this.plugin.settings[key])).onChange(async (value) => {
-        (this.plugin.settings as unknown as Record<string, string>)[key] = value;
-        await this.plugin.persist();
+        await this.setControlValue(key, value);
       });
     });
   }

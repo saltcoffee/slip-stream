@@ -51,6 +51,9 @@ export class SlipStreamView extends ItemView {
     ws.requestSaveLayout?.();
   }
 
+  bindTarget(editorId: string): void { this.controller?.bindTarget(editorId); }
+  refreshCitationContext(): void { this.controller?.refreshCitationContext(); }
+
   refreshFromExternal(): void {
     this.controller?.refreshSilent();
   }
