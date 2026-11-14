@@ -21,9 +21,11 @@ All notable changes to SlipStream are documented in this file.
 - Quote every line in A, retain B paragraph boundaries, restrict C to whole anchored blocks and validate custom-template variables and source links.
 - Separate clipboard success, draft insertion and record persistence; copies and failures no longer consume insertion dedupe.
 - Space confirmation-dialog buttons consistently and allow wrapping in narrow windows.
+- Resolve review warnings for frontmatter types, redundant assertions and escapes, editor callbacks and asynchronous DOM event handlers.
 
 ### Changed
 
+- Require Obsidian 1.13.0 or later for the declarative settings refresh API.
 - Built-in source links use full vault paths; custom templates gain `link` and `blockquoteContent`. Invalid or ambiguous outputs are reported without rewriting stored templates.
 - History distinguishes insertion, copying and unknown legacy events. Clearing history leaves snapshots intact; recording can be disabled independently of session duplicate reminders.
 

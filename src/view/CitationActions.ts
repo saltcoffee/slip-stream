@@ -71,12 +71,13 @@ export async function performCitation(plugin: SlipStreamPlugin, intent: Citation
   });
   if (outcome.recording === "pending") {
     const retry = feedback.createEl("button", { cls: "slipstream-btn", text: t("citation.retryRecord") });
-    retry.addEventListener("click", async () => {
+    const retryRecord = async () => {
       retry.disabled = true;
       const state = await plugin.history.retry(intent.operationId);
       retry.disabled = false;
       if (state !== "pending") { feedback.setText(t(state === "capacity-exceeded" ? "error.RECORD_CAPACITY_EXCEEDED" : "citation.recordSaved")); }
-    });
+    };
+    retry.addEventListener("click", () => { void retryRecord(); });
   } else if (outcome.effect === "none" && outcome.status !== "cancelled" && (outcome.code !== "TARGET_STALE" || currentTicket)) {
     const retry = feedback.createEl("button", { cls: "slipstream-btn", text: t("common.retry") });
     retry.addEventListener("click", () => {

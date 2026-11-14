@@ -20,7 +20,7 @@
 2. Select **Browse** and search for **SlipStream**.
 3. Select **Install**, then **Enable**.
 
-> Desktop only.
+> Requires Obsidian 1.13.0 or later. Desktop only.
 
 ## Quick start
 

@@ -109,7 +109,7 @@ export class SlipStreamSettingsTab extends PluginSettingTab {
       this.plugin.relocalizeViews();
     }
     try { await this.plugin.persist(); } catch (error) { new Notice(t("data.saveFailed"), 0); throw error; }
-    if (key === "language") this.update?.();
+    if (key === "language") this.update();
   }
 
   /** Imperative settings for Obsidian < 1.13 (declarative API not available). */

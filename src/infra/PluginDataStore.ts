@@ -33,7 +33,8 @@ export function validateSettings(raw: unknown): Settings {
   for (const key of Object.keys(out) as Array<keyof Settings>) {
     const value = raw[key];
     if (typeof value !== typeof out[key]) continue;
-    if (enums[key] && !enums[key]!.includes(value as string)) continue;
+    const options = enums[key];
+    if (options && (typeof value !== "string" || !options.includes(value))) continue;
     const range = bounds[key];
     if (typeof value === "number" && (!Number.isFinite(value) || range && (value < range[0] || value > range[1]) || key !== "fontScale" && !Number.isInteger(value))) continue;
     (out as unknown as Record<string, unknown>)[key] = value;

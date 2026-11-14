@@ -22,15 +22,17 @@ export class HistoryModal extends Modal {
         void this.plugin.app.workspace.openLinkText(record.sourcePath + anchor, "", false);
       });
       if (record.targetPath) item.createEl("button", { cls: "slipstream-btn", text: t("history.openTarget") }).addEventListener("click", () => { void this.plugin.app.workspace.openLinkText(record.targetPath!, "", false); });
-      item.createEl("button", { cls: "slipstream-btn", text: t("history.recopy") }).addEventListener("click", async () => {
+      const recopy = async () => {
         try { await this.plugin.editors.copy(record.text ?? record.snippet); feedback.setText(t("notice.copied")); }
         catch { feedback.setText(t("error.CLIPBOARD_DENIED")); }
-      });
+      };
+      item.createEl("button", { cls: "slipstream-btn", text: t("history.recopy") }).addEventListener("click", () => { void recopy(); });
     }
     this.contentEl.createDiv({ text: t("set.clearHistoryDesc") });
-    this.contentEl.createEl("button", { cls: "slipstream-btn", text: t("history.clear") }).addEventListener("click", async () => {
+    const clearHistory = async () => {
       try { await this.plugin.history.clearHistory(); this.onOpen(); } catch { new Notice(t("data.saveFailed"), 0); }
-    });
+    };
+    this.contentEl.createEl("button", { cls: "slipstream-btn", text: t("history.clear") }).addEventListener("click", () => { void clearHistory(); });
   }
   onClose(): void { this.contentEl.empty(); }
 }

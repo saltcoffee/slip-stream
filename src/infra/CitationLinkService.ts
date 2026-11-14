@@ -9,11 +9,11 @@ export class CitationLinkService {
   constructor(private app: App, private editors: EditorGateway) {}
   link(sourceRef: string, context: string, blockId?: string, heading?: string): string {
     const file = this.editors.file(sourceRef);
-    if (/[#|^:\[\]\r\n%]/.test(file.path)) throw new CitationError("LINK_INVALID");
+    if (/[#|^:[\]\r\n%]/.test(file.path)) throw new CitationError("LINK_INVALID");
     const subpath = blockId ? `#^${blockId}` : heading ? `#${heading}` : "";
     if (heading) {
       const cache = this.app.metadataCache.getFileCache(file);
-      if (/[#|\[\]\r\n]/.test(heading) || !cache || !resolveSubpath(cache, subpath)) throw new CitationError("LINK_INVALID");
+      if (/[#|[\]\r\n]/.test(heading) || !cache || !resolveSubpath(cache, subpath)) throw new CitationError("LINK_INVALID");
     }
     if (this.app.metadataCache.getFirstLinkpathDest(file.path, context) !== file) throw new CitationError("LINK_INVALID");
     return `[[${file.path}${subpath}]]`;
