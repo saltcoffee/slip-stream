@@ -44,6 +44,11 @@ export interface SourceBlock {
   type: BlockKind;
   hasBlockId: boolean;
   blockId?: string;
+  rawRange: { from: number; to: number };
+  blockKey: string;
+  heading?: string;
+  listRange?: BlockRange;
+  depth?: number;
 }
 
 /** 渲染单元：list_item 会被合并成 list 单元 */
@@ -52,31 +57,9 @@ export interface RenderUnit {
   endLine: number;
   content: string;
   type: "list" | BlockKind;
-  items?: BlockRange[];
-}
-
-export interface DragPayload {
-  filePath: string;
-  startLine: number;
-  endLine: number;
-  content: string;
-  /** 渲染时捕获的原始块快照；跨块选区不提供精确锚点。 */
-  sourceContent?: string;
-  title: string;
-  mode: "block" | "selection";
-  blockType?: RenderUnit["type"];
-  heading?: string;
-}
-
-export interface CitationRecord {
-  id: string;
-  at: number;
-  sourcePath: string;
+  rawRange: { from: number; to: number };
+  blockKey: string;
   blockId?: string;
   heading?: string;
-  targetPath?: string;
-  template: string;
-  snippet: string;
-  /** 最终落盘文本（用于「再复制一次」） */
-  text?: string;
+  items?: SourceBlock[];
 }

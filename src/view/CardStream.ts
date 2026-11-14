@@ -59,6 +59,8 @@ export class CardStream {
     }
   }
 
+  refreshCitationContext(): void { this.views.forEach((view) => view.refreshCitationContext()); }
+
   destroy(): void {
     this.observer?.disconnect();
     this.observer = null;

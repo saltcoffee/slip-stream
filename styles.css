@@ -241,3 +241,56 @@
   .slipstream-stream { scroll-behavior: auto; }
   .slipstream-skeleton { animation: none; }
 }
+
+/* Citation state remains readable in narrow sidebars and both host themes. */
+.slipstream-targetbar,
+.slipstream-citation-actions,
+.slipstream-operation-feedback {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  overflow-wrap: anywhere;
+}
+.slipstream-targetbar { border-bottom: 1px solid var(--background-modifier-border); }
+.slipstream-target-status, .slipstream-anchor-status { flex-basis: 100%; }
+.slipstream-anchor-status, .slipstream-precision { font-size: var(--font-ui-smaller); color: var(--text-muted); }
+.slipstream-operation-feedback:empty { display: none; }
+.slipstream-operation-feedback { max-height: 28vh; overflow-y: auto; flex-shrink: 0; }
+.slipstream-operation-feedback > div { flex-basis: 100%; }
+.slipstream-card { position: relative; }
+.slipstream-excerpt, .slipstream-highlight, .slipstream-callout { white-space: pre-wrap; }
+.slipstream-citation-content > :first-child { margin-top: 0; }
+.slipstream-paragraph-action {
+  position: absolute;
+  top: var(--slipstream-action-top, 0);
+  left: 2px;
+  padding: 0 3px;
+  opacity: 0;
+}
+.slipstream-paragraph-action.is-visible,
+.slipstream-paragraph-action:hover,
+.slipstream-paragraph-action:focus-visible { opacity: 1; }
+.slipstream-card.is-collapsed .slipstream-card-citation-controls { display: none; }
+.slipstream-citation-actions[hidden] { display: none; }
+.slipstream-btn:focus-visible { outline: 2px solid var(--interactive-accent); outline-offset: 2px; }
+.slipstream-truncation, [data-no-cite] { user-select: none; }
+.slipstream-history-item { flex-wrap: wrap; }
+.slipstream-history-title { overflow-wrap: anywhere; }
+.slipstream-stream { min-height: 0; }
+.slipstream-targetbar, .slipstream-toolbar, .slipstream-sourcebar, .slipstream-statusbar { flex-shrink: 0; }
+
+.slipstream-prompt-message {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 50vh;
+  overflow-y: auto;
+}
+.slipstream-prompt-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding-top: 8px;
+}

@@ -1,11 +1,13 @@
 import { Component } from "obsidian";
 import type { CardModel } from "../domain/CardModel";
-import { extractSnippet } from "../domain/CardModel";
-import type { Snippet } from "../domain/CardModel";
-import { groupRenderUnits, mapBlocks } from "../domain/BlockMapper";
+import { extractSnippet } from "../domain/SnippetExtractor";
+import type { Snippet } from "../domain/SnippetExtractor";
+import { groupRenderUnits, mapBlocks, originOf } from "../domain/BlockMapper";
 import type { Density } from "../domain/types";
 import type SlipStreamPlugin from "../main";
 import { DragHandle } from "./DragHandle";
+import { CitationActions } from "./CitationActions";
+import type { SourceSnapshot, TargetBinding } from "../domain/citationTypes";
 import { t } from "../util/i18n";
 
 export interface CardHost {
@@ -13,7 +15,9 @@ export interface CardHost {
   toggleCollapse(card: CardModel): void;
   togglePin(card: CardModel): void;
   dismiss(card: CardModel): void;
-  copy(card: CardModel): void;
+  getTarget(): TargetBinding | undefined;
+  getCitationFeedback(): HTMLElement;
+  reselectSource(card: CardModel): void;
 }
 
 export interface CardViewOptions {
@@ -34,6 +38,12 @@ export class CardView {
   private component?: Component;
   private rendered = false;
   private rendering = false;
+  private generation = 0;
+  private disposed = false;
+  private controlsEl: HTMLElement;
+  private actions?: CitationActions;
+  private snapshot?: SourceSnapshot;
+  private elements: HTMLElement[] = [];
 
   constructor(private opts: CardViewOptions) {
     const { card, collapsed, pinned } = opts;
@@ -69,9 +79,12 @@ export class CardView {
       text: "⧉",
       attr: { "aria-label": t("card.copy") },
     });
+    copyBtn.addEventListener("pointerdown", () => this.actions?.selection());
     copyBtn.addEventListener("click", (e) => {
       e.stopPropagation();
-      this.opts.host.copy(card);
+      if (this.el.hasClass("is-collapsed")) { this.opts.host.toggleCollapse(card); this.setCollapsed(false); }
+      if (this.actions) void this.actions.copySelection();
+      else this.opts.host.getCitationFeedback().setText(t("citation.selectFirst"));
     });
     const dismissBtn = actions.createEl("button", {
       cls: "slipstream-btn",
@@ -90,6 +103,7 @@ export class CardView {
     });
 
     this.bodyEl = this.el.createDiv({ cls: "slipstream-card-body" });
+    this.controlsEl = this.el.createDiv({ cls: "slipstream-card-citation-controls", attr: { "data-no-cite": "true" } });
   }
 
   setCollapsed(collapsed: boolean): void {
@@ -99,23 +113,30 @@ export class CardView {
   }
 
   async ensureRendered(): Promise<void> {
-    if (this.rendered || this.rendering) return;
+    if (this.disposed || this.rendered || this.rendering) return;
     if (this.opts.density === "compact" && this.el.hasClass("is-collapsed")) return;
     this.rendering = true;
+    const generation = ++this.generation;
     this.bodyEl.setCssProps({ "--slipstream-min-height": "" });
     try {
       this.component = new Component();
       this.component.load();
       const source = await this.opts.host.readSource(this.opts.card);
+      if (this.disposed || generation !== this.generation) return;
       const lines = source.split("\n");
+      this.snapshot = this.opts.plugin.blockIds.capture(this.opts.card.file, source, this.opts.card.title);
+      this.actions = new CitationActions(this.opts.plugin, this.snapshot, this.bodyEl, this.controlsEl,
+        () => this.opts.host.getTarget(), () => { this.opts.host.reselectSource(this.opts.card); }, this.opts.host.getCitationFeedback());
       if (this.opts.density === "snippet") {
         this.renderSnippet(source);
       } else {
-        await this.renderFull(source, lines);
+        await this.renderFull(source, lines, generation);
       }
-      new DragHandle(this.opts.plugin).attach(this.bodyEl, this.opts.card, lines);
+      if (this.disposed || generation !== this.generation) return;
+      new DragHandle(this.opts.plugin).attach(this.bodyEl, this.elements, this.actions);
       this.rendered = true;
     } catch (e) {
+      if (this.disposed || generation !== this.generation) return;
       this.bodyEl.empty();
       const err = this.bodyEl.createDiv({ cls: "slipstream-state" });
       err.createDiv({ text: t("state.renderError") });
@@ -124,51 +145,69 @@ export class CardView {
         this.rendered = false;
         void this.ensureRendered();
       });
-      this.opts.plugin.logger.error("render card failed", this.opts.card.path, e);
+      this.opts.plugin.logger.error("render card failed");
     } finally {
-      this.rendering = false;
+      if (generation === this.generation) this.rendering = false;
     }
   }
 
   unloadBody(): void {
-    if (!this.rendered) return;
+    if (!this.rendered && !this.rendering) return;
     const height = this.bodyEl.offsetHeight;
     this.bodyEl.setCssProps({ "--slipstream-min-height": `${height}px` });
+    this.generation++; this.rendering = false;
+    this.actions?.destroy(); this.actions = undefined; this.elements = [];
     this.component?.unload();
     this.component = undefined;
-    this.bodyEl.empty();
+    this.bodyEl.empty(); this.controlsEl.empty();
     this.rendered = false;
   }
 
   destroy(): void {
+    this.disposed = true; this.generation++;
+    this.actions?.destroy();
     this.component?.unload();
     this.component = undefined;
     this.el.empty();
   }
 
-  private async renderFull(source: string, lines: string[]): Promise<void> {
+  private async renderFull(source: string, lines: string[], generation: number): Promise<void> {
     this.opts.card.wordCount = source.replace(/\s+/g, "").length;
     this.metaEl.setText(t("card.words", { n: this.opts.card.wordCount }));
-    const blocks = mapBlocks(this.opts.plugin.app, this.opts.card.file, source);
+    const blocks = mapBlocks(source, this.snapshot!.bodyStart);
     const units = groupRenderUnits(blocks, lines);
     for (const unit of units) {
       const wrapper = this.bodyEl.createDiv({ cls: "slipstream-block" });
-      wrapper.setAttribute("data-src-start", String(unit.startLine));
-      wrapper.setAttribute("data-src-end", String(unit.endLine));
-      wrapper.setAttribute("data-block-type", unit.type);
+      const content = wrapper.createDiv({ cls: "slipstream-citation-content" });
       await this.opts.plugin.renderService.renderUnit(
-        wrapper,
+        content,
         unit,
         this.opts.card.file,
         this.component!,
         this.opts.plugin.settings
       );
+      if (this.disposed || generation !== this.generation) return;
+      const origin = originOf(unit);
+      origin.rawText = source.slice(origin.rawRange.from, origin.rawRange.to);
+      const original = this.snapshot!.spans.find((span) => span.blockKey === origin.blockKey)!;
+      this.actions!.addUnit(content, { origin: original, content: this.opts.plugin.blockIds.content(original), mode: "block", key: unit.type });
+      this.elements.push(content);
+      if (unit.items) {
+        const lis = content.querySelectorAll<HTMLElement>("li");
+        unit.items.forEach((item, index) => {
+          const li = lis[index];
+          if (!li) return;
+          const span = this.snapshot!.spans.find((candidate) => candidate.blockKey === item.blockKey)!;
+          this.actions!.addUnit(li, { origin: span, content: this.opts.plugin.blockIds.content(span), mode: "block", key: `list-item:${index}` });
+          this.elements.push(li);
+        });
+      }
     }
   }
 
   private renderSnippet(source: string): void {
     const s = this.opts.plugin.settings;
-    const blocks = mapBlocks(this.opts.plugin.app, this.opts.card.file, source);
+    const blocks = mapBlocks(source, this.snapshot!.bodyStart);
     const { excerpt, highlights, callouts, wordCount } = extractSnippet(
       source,
       blocks,
@@ -203,11 +242,15 @@ export class CardView {
     cls: string
   ): void {
     const wrapper = this.bodyEl.createDiv({ cls: "slipstream-block" });
-    wrapper.setAttribute("data-src-start", String(snippet.block.startLine));
-    wrapper.setAttribute("data-src-end", String(snippet.block.endLine));
-    wrapper.setAttribute("data-block-type", snippet.block.type);
-    wrapper.createDiv({ cls, text: snippet.text });
+    const content = wrapper.createDiv({ cls: `${cls} slipstream-citation-content`, text: snippet.displayText });
+    const origin = this.snapshot!.spans.find((span) => span.blockKey === snippet.origin.blockKey)!;
+    const key = `${snippet.id.split(":")[0]}:${(snippet.projection[0] ?? snippet.origin.rawRange.from) - snippet.origin.rawRange.from}`;
+    this.actions!.addUnit(content, { origin, content: snippet.displayText, mode: "fragment", key });
+    this.elements.push(content);
+    if (snippet.truncated) wrapper.createSpan({ cls: "slipstream-truncation", text: "…", attr: { "data-no-cite": "true", "aria-hidden": "true" } });
   }
+
+  refreshCitationContext(): void { this.actions?.refreshContext(); }
 
   private openFile(): void {
     const leaf = this.opts.plugin.app.workspace.getLeaf("tab");

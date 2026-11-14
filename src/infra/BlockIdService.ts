@@ -1,96 +1,128 @@
-import type { App } from "obsidian";
-import { TFile } from "obsidian";
-import type { RenderUnit } from "../domain/types";
-import { inlineBlockId, stripInlineBlockId } from "../domain/BlockReference";
+import { getFrontMatterInfo } from "obsidian";
+import type { App, TFile } from "obsidian";
+import { mapBlocks, groupRenderUnits, originOf, standaloneId } from "../domain/BlockMapper";
+import { canCreateBlockId, inlineBlockId, stripInlineBlockId } from "../domain/BlockReference";
+import { CitationError, validRange } from "../domain/citationTypes";
+import type { OriginSpan, SourceSnapshot, TextRange } from "../domain/citationTypes";
+import type { EditorGateway } from "./EditorGateway";
 
-function randomBase36(len: number): string {
-  const chars = "abcdefghijklmnopqrstuvwxyz0123456789";
-  let out = "";
-  for (let i = 0; i < len; i++) {
-    out += chars[Math.floor(Math.random() * chars.length)];
-  }
-  return out;
-}
+interface KnownEdit { before: string; after: string; range: TextRange; text: string }
+export interface SourceInspection { text: string; spans: OriginSpan[]; id?: string; canCreate: boolean; heading?: string }
+export interface AnchorResult extends SourceInspection { kind: "reused" | "created" | "unavailable"; sourceAfter: string }
 
-/** 原子写 Block ID（Vault.process），带 Frontmatter / 类型 / 冲突防护。 */
 export class BlockIdService {
-  constructor(private app: App, private onWritten?: (filePath: string) => void) {}
+  private queues = new Map<string, Promise<unknown>>();
+  private snapshots = new Map<string, Set<WeakRef<SourceSnapshot>>>();
+  private resolved = new WeakMap<SourceSnapshot, { text: string; spans: Map<string, OriginSpan> }>();
+  constructor(private app: App, private editors: EditorGateway, private onWritten?: (path: string) => void) {}
 
-  async ensure(
-    filePath: string,
-    startLine: number,
-    endLine: number,
-    expected: string,
-    blockType: RenderUnit["type"]
-  ): Promise<string | undefined> {
-    const file = this.app.vault.getAbstractFileByPath(filePath);
-    if (!(file instanceof TFile) || file.extension !== "md") return undefined;
-    if (!Number.isInteger(startLine) || !Number.isInteger(endLine) || startLine < 0 || endLine <= startLine) return undefined;
-    if (typeof expected !== "string" || !["paragraph", "list_item", "list", "blockquote", "callout"].includes(blockType)) return undefined;
-
-    const cache = this.app.metadataCache.getFileCache(file);
-    const fmEnd = cache?.frontmatterPosition ? cache.frontmatterPosition.end.line + 1 : 0;
-    if (startLine < fmEnd) return undefined; // Frontmatter 保护
-
-    let result: string | undefined;
-    let written = false;
-
-    await this.app.vault.process(file, (data) => {
-      const newline = data.includes("\r\n") ? "\r\n" : "\n";
-      const lines = data.split(/\r?\n/);
-      if (endLine > lines.length) return data;
-      const current = lines.slice(startLine, endLine).join("\n");
-      const cachedId = Object.values(cache?.blocks ?? {}).find((block) =>
-        block.position.start.line === startLine &&
-        current.split("\n").some((line) => line.match(/[ \t]\^([A-Za-z0-9-]+)[ \t]*$/)?.[1] === block.id)
-      )?.id;
-      const inline = inlineBlockId(current, blockType) ?? cachedId;
-      if (stripInlineBlockId(current, blockType, inline) !== stripInlineBlockId(expected, blockType, inline)) return data;
-      if (blockType === "list_item") {
-        const item = lines[startLine].match(/^\s*(?:[-+*]|\d+[.)])(?:[ \t]+(.*))?$/);
-        // 代码作为列表项首块时没有可写入行内标记的正文，安全降级为文件链接。
-        if (!item?.[1]?.trim() || /^(?:`{3,}|~{3,})/.test(item[1])) return data;
-      }
-
-      let anchor = endLine - 1;
-      while (anchor > startLine && (lines[anchor] ?? "").trim() === "") anchor--;
-      if (!lines[anchor]) return data;
-
-      let next = anchor + 1;
-      while (next < lines.length && lines[next].trim() === "") next++;
-      const standalone = next > anchor + 1 ? lines[next]?.match(/^\^([A-Za-z0-9-]+)\s*$/)?.[1] : undefined;
-      const existing = inline ?? standalone;
-      if (existing) {
-        result = existing;
-        return data;
-      }
-
-      const id = this.uniqueId(data);
-      if (blockType === "paragraph" || blockType === "list_item") {
-        const line = blockType === "list_item" ? startLine : anchor;
-        lines[line] += ` ^${id}`;
-      } else {
-        // 结构块的标记独立于正文，避免修改 Callout/列表中的代码围栏。
-        lines.splice(anchor + 1, 0, "", `^${id}`);
-        if (lines[anchor + 3]?.trim() !== "") lines.splice(anchor + 3, 0, "");
-      }
-      result = id;
-      written = true;
-      return lines.join(newline);
-    });
-
-    if (written) this.onWritten?.(filePath);
-    return result;
+  capture(file: TFile, text: string, title = file.basename): SourceSnapshot {
+    const bodyStart = getFrontMatterInfo(text).contentStart;
+    const blocks = mapBlocks(text, bodyStart);
+    const units = groupRenderUnits(blocks, text.split("\n"));
+    const spans = [...blocks.map(originOf), ...units.filter((unit) => unit.type === "list").map((unit) => {
+      const origin = originOf(unit);
+      origin.rawText = text.slice(origin.rawRange.from, origin.rawRange.to);
+      origin.existingBlockId = standaloneId(text, origin.rawRange.to);
+      return origin;
+    })];
+    for (const span of spans) {
+      span.existingBlockId = this.existingId(text, span, file);
+      if (span.heading && blocks.filter((block) => block.type === "heading" && block.heading === span.heading).length !== 1) span.heading = undefined;
+    }
+    const snapshot = { sourceRef: this.editors.fileRef(file), title, text, bodyStart, spans };
+    const refs = this.snapshots.get(snapshot.sourceRef) ?? new Set<WeakRef<SourceSnapshot>>();
+    for (const ref of refs) if (!ref.deref()) refs.delete(ref);
+    refs.add(new WeakRef(snapshot)); this.snapshots.set(snapshot.sourceRef, refs);
+    this.resolved.set(snapshot, { text, spans: new Map(spans.map((span) => [span.blockKey, span])) });
+    return snapshot;
   }
-
+  async inspect(snapshot: SourceSnapshot, selected: readonly OriginSpan[]): Promise<SourceInspection> {
+    if (!selected.length || selected.some((span) => !validRange(span.rawRange, snapshot.text.length) || span.rawRange.from < snapshot.bodyStart ||
+      snapshot.text.slice(span.rawRange.from, span.rawRange.to) !== span.rawText || !snapshot.spans.some((item) => item.blockKey === span.blockKey && item.rawText === span.rawText && item.rawRange.from === span.rawRange.from && item.rawRange.to === span.rawRange.to))) throw new CitationError("SOURCE_MAPPING_UNSUPPORTED");
+    for (let i = 1; i < selected.length; i++) if (selected[i].rawRange.from < selected[i - 1].rawRange.to) throw new CitationError("SOURCE_MAPPING_UNSUPPORTED");
+    const resolved = this.resolved.get(snapshot);
+    const text = resolved?.text ?? snapshot.text;
+    const spans = selected.map((span) => ({ ...(resolved?.spans.get(span.blockKey) ?? span), rawRange: { ...(resolved?.spans.get(span.blockKey) ?? span).rawRange } }));
+    const current = await this.editors.readSource(snapshot.sourceRef);
+    if (text !== current) throw new CitationError("SOURCE_STALE");
+    const first = spans[0];
+    const id = this.existingId(text, first, this.editors.file(snapshot.sourceRef));
+    const marker = inlineBlockId(first.rawText, first.kind) ?? (first.kind !== "list_item" ? standaloneId(text, first.rawRange.to) : undefined);
+    const canCreate = canCreateBlockId(first.kind, first.rawText) && !marker;
+    return { text, spans, id, canCreate, heading: first.heading };
+  }
+  private existingId(text: string, span: OriginSpan, file: TFile): string | undefined {
+    const cache = this.app.metadataCache.getFileCache(file);
+    const cachedId = span.kind === "list_item" ? Object.values(cache?.blocks ?? {}).find((block) =>
+      (block.position.start.offset === span.rawRange.from || block.position.start.line === text.slice(0, span.rawRange.from).split("\n").length - 1) &&
+      span.rawText.split(/\r?\n/).some((line) => line.match(/[ \t]\^([A-Za-z0-9-]+)[ \t]*$/)?.[1] === block.id))?.id : undefined;
+    const id = inlineBlockId(span.rawText, span.kind) ?? (span.kind !== "list_item" ? standaloneId(text, span.rawRange.to) : undefined) ?? cachedId;
+    if (!id) return;
+    const markers = [...text.matchAll(/(?:^|[ \t])\^([A-Za-z0-9-]+)[ \t]*(?=\r?$)/gm)];
+    return markers.filter((marker) => marker[1] === id).length === 1 ? id : undefined;
+  }
+  async ensure(snapshot: SourceSnapshot, selected: readonly OriginSpan[], allowNew: boolean, cancelled: () => boolean): Promise<AnchorResult> {
+    const previous = this.queues.get(snapshot.sourceRef) ?? Promise.resolve();
+    const job = previous.catch(() => {}).then(async (): Promise<AnchorResult> => {
+      const inspected = await this.inspect(snapshot, selected);
+      if (cancelled()) throw new CitationError("OPERATION_CANCELLED");
+      if (inspected.id) return { ...inspected, kind: "reused", sourceAfter: inspected.text };
+      if (!allowNew || !inspected.canCreate) return { ...inspected, kind: "unavailable", sourceAfter: inspected.text };
+      const span = inspected.spans[0];
+      const id = this.uniqueId(inspected.text);
+      const newline = inspected.text.includes("\r\n") ? "\r\n" : "\n";
+      const suffix = inspected.text.slice(span.rawRange.to);
+      const padding = suffix.startsWith(newline + newline) ? "" : suffix.startsWith(newline) ? newline : newline + newline;
+      const text = span.kind === "paragraph" || span.kind === "list_item" ? ` ^${id}` : `${newline}${newline}^${id}${padding}`;
+      const range = { from: span.rawRange.to, to: span.rawRange.to };
+      const expected = inspected.text.slice(0, range.from) + text + inspected.text.slice(range.to);
+      let failure: unknown;
+      try {
+        if (!this.editors.writeSource(snapshot.sourceRef, inspected.text, range, text)) {
+          await this.app.vault.process(this.editors.file(snapshot.sourceRef), (current) => {
+            if (cancelled()) throw new CitationError("OPERATION_CANCELLED");
+            if (current !== inspected.text || getFrontMatterInfo(current).contentStart !== snapshot.bodyStart) throw new CitationError("SOURCE_STALE");
+            return expected;
+          });
+        }
+      } catch (error) { failure = error; }
+      let actual: string;
+      try { actual = await this.editors.readSource(snapshot.sourceRef); }
+      catch { throw new CitationError("COMMIT_STATE_UNCERTAIN"); }
+      if (actual !== expected) {
+        if (failure instanceof CitationError && ["SOURCE_STALE", "SOURCE_AMBIGUOUS", "SOURCE_MISSING", "OPERATION_CANCELLED"].includes(failure.code)) throw failure;
+        if (actual !== inspected.text) throw new CitationError("COMMIT_STATE_UNCERTAIN");
+        if (failure instanceof CitationError) throw failure;
+        throw new CitationError("ANCHOR_WRITE_FAILED");
+      }
+      this.remapSnapshots(snapshot.sourceRef, { before: inspected.text, after: expected, range, text });
+      this.onWritten?.(this.editors.path(snapshot.sourceRef));
+      return { ...inspected, kind: "created", id, sourceAfter: expected };
+    });
+    this.queues.set(snapshot.sourceRef, job);
+    try { return await job; } finally { if (this.queues.get(snapshot.sourceRef) === job) this.queues.delete(snapshot.sourceRef); }
+  }
+  private remapSnapshots(sourceRef: string, edit: KnownEdit): void {
+    const refs = this.snapshots.get(sourceRef);
+    for (const ref of refs ?? []) {
+      const snapshot = ref.deref();
+      if (!snapshot) { refs?.delete(ref); continue; }
+      const resolved = this.resolved.get(snapshot)!;
+      if (resolved.text !== edit.before) continue;
+      resolved.spans = new Map([...resolved.spans].map(([key, span]) => {
+        const from = span.rawRange.from >= edit.range.from ? span.rawRange.from + edit.text.length : span.rawRange.from;
+        const to = span.rawRange.to > edit.range.from || span.rawRange.to === edit.range.from && edit.text.startsWith(" ^") ? span.rawRange.to + edit.text.length : span.rawRange.to;
+        return [key, { ...span, rawRange: { from, to }, rawText: edit.after.slice(from, to) }];
+      }));
+      resolved.text = edit.after;
+    }
+  }
   private uniqueId(source: string): string {
-    const used = new Set(
-      (source.match(/\^([A-Za-z0-9-]{4,})/g) ?? []).map((s) => s.slice(1))
-    );
+    const used = new Set([...source.matchAll(/\^([A-Za-z0-9-]+)/g)].map((match) => match[1]));
     let id: string;
-    do {
-      id = randomBase36(6);
-    } while (used.has(id));
+    do { id = Array.from(crypto.getRandomValues(new Uint8Array(6)), (n) => "abcdefghijklmnopqrstuvwxyz0123456789"[n % 36]).join(""); } while (used.has(id));
     return id;
   }
+  content(span: OriginSpan): string { return stripInlineBlockId(span.rawText, span.kind, span.existingBlockId); }
 }

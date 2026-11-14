@@ -25,23 +25,9 @@ export class MarkdownRenderService {
     try {
       container.empty();
       await MarkdownRenderer.render(this.app, unit.content, container, file.path, component);
-      this.annotateList(container, unit);
     } finally {
       this.release();
     }
-  }
-
-  private annotateList(container: HTMLElement, unit: RenderUnit): void {
-    if (unit.type !== "list" || !unit.items) return;
-    const lis = container.querySelectorAll("li");
-    unit.items.forEach((it, idx) => {
-      const li = lis[idx] as HTMLElement | undefined;
-      if (!li) return;
-      li.classList.add("slipstream-block");
-      li.setAttribute("data-src-start", String(it.startLine));
-      li.setAttribute("data-src-end", String(it.endLine));
-      li.setAttribute("data-block-type", "list_item");
-    });
   }
 
   private async acquire(max: number): Promise<void> {
