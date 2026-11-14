@@ -55,28 +55,27 @@ export class EditorGateway {
   private notify(): void { this.listeners.forEach((listener) => listener()); }
 
   extension(): Extension {
-    const gateway = this;
     return [ViewPlugin.define((cm) => {
-      gateway.register(cm);
-      return { update(update: ViewUpdate) { gateway.update(update); }, destroy() { gateway.remove(cm); } };
+      this.register(cm);
+      return { update: (update: ViewUpdate) => { this.update(update); }, destroy: () => { this.remove(cm); } };
     }), Prec.highest(EditorView.domEventHandlers({
-      dragover(event, cm) {
-        if (event.defaultPrevented || !event.dataTransfer?.types.includes(MIME_SLIPSTREAM) || !gateway.cms.has(cm) || !gateway.acceptsDrag()) return false;
+      dragover: (event, cm) => {
+        if (event.defaultPrevented || !event.dataTransfer?.types.includes(MIME_SLIPSTREAM) || !this.cms.has(cm) || !this.acceptsDrag()) return false;
         event.preventDefault();
         if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
         return true;
       },
-      drop(event, cm) {
+      drop: (event, cm) => {
         if (event.defaultPrevented || !event.dataTransfer?.types.includes(MIME_SLIPSTREAM)) return false;
         const token = event.dataTransfer.getData(MIME_SLIPSTREAM);
-        if (!token || !gateway.cms.has(cm) || !gateway.acceptsDrag(token)) return false;
+        if (!token || !this.cms.has(cm) || !this.acceptsDrag(token)) return false;
         event.preventDefault(); event.stopPropagation();
         try {
-          const entry = gateway.cms.get(cm)!;
+          const entry = this.cms.get(cm)!;
           const offset = cm.posAtCoords({ x: event.clientX, y: event.clientY });
           if (offset === null) throw new CitationError("DROP_POSITION_UNAVAILABLE");
-          gateway.onDrop?.(token, gateway.capture(entry.id, 0, offset));
-        } catch (error) { gateway.onDrop?.(token, undefined, error instanceof CitationError ? error : new CitationError("DROP_POSITION_UNAVAILABLE")); }
+          this.onDrop?.(token, this.capture(entry.id, 0, offset));
+        } catch (error) { this.onDrop?.(token, undefined, error instanceof CitationError ? error : new CitationError("DROP_POSITION_UNAVAILABLE")); }
         return true;
       },
     }))];

@@ -18,7 +18,7 @@ function visible(raw: string, from: number): Character[] {
     const text = chars.map((c) => c.value).join("");
     const ranges = [...text.matchAll(pattern)].reverse();
     for (const match of ranges) {
-      const start = match.index!;
+      const start = match.index;
       const retained = keep === undefined ? [] : chars.slice(start + match[0].indexOf(match[keep]), start + match[0].indexOf(match[keep]) + match[keep].length);
       chars.splice(start, match[0].length, ...retained);
     }
@@ -54,7 +54,7 @@ export function extractSnippet(source: string, blocks: SourceBlock[], excerptLen
   }
   const highlights: Snippet[] = [];
   if (includeHighlights) for (const match of source.matchAll(/==([^=\n]+)==/g)) {
-    const from = match.index!;
+    const from = match.index;
     const block = supported.filter((b) => b.rawRange.from <= from && from + match[0].length <= b.rawRange.to)
       .sort((a, b) => a.rawRange.to - a.rawRange.from - (b.rawRange.to - b.rawRange.from))[0];
     if (!block) continue;

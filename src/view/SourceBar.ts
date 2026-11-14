@@ -127,7 +127,7 @@ class TagSuggestModal extends SuggestModal<string> {
     for (const file of app.vault.getMarkdownFiles()) {
       const cache = app.metadataCache.getFileCache(file);
       for (const t of cache?.tags ?? []) set.add(t.tag);
-      const fm = cache?.frontmatter?.tags;
+      const fm: unknown = cache?.frontmatter?.tags;
       if (typeof fm === "string") set.add("#" + fm.replace(/^#/, ""));
       else if (Array.isArray(fm)) {
         for (const v of fm) if (typeof v === "string") set.add("#" + v.replace(/^#/, ""));
