@@ -4,6 +4,12 @@ All notable changes to SlipStream are documented in this file.
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-11-14
+
+### Changed
+
+- Reissue the 0.1.3 citation and review fixes under a new version for a fresh Obsidian Community directory review.
+
 ## [0.1.3] - 2026-11-14
 
 ### Added
