@@ -36,6 +36,7 @@ export class EditorGateway {
   private cms = new WeakMap<EditorView, RegisteredEditor>();
   private bindings = new Set<TargetBinding>();
   private listeners = new Set<() => void>();
+  private contentListeners = new Set<(fileRef: string, path: string) => void>();
   private sequence = 0;
   onDrop?: (token: string, ticket?: TargetTicket, error?: CitationError) => void;
   constructor(private app: App, private selectionBehavior: () => "replace" | "append", private acceptsDrag: (token?: string) => boolean = () => true) {}
@@ -52,6 +53,8 @@ export class EditorGateway {
   }
   path(ref: string): string { return this.file(ref).path; }
   subscribe(listener: () => void): () => void { this.listeners.add(listener); return () => this.listeners.delete(listener); }
+  /** 仅正文变化通知；选区／焦点不会触发，避免引用目标光标移动导致全文重查。 */
+  onContentChanged(listener: (fileRef: string, path: string) => void): () => void { this.contentListeners.add(listener); return () => this.contentListeners.delete(listener); }
   private notify(): void { this.listeners.forEach((listener) => listener()); }
 
   extension(): Extension {
@@ -92,7 +95,11 @@ export class EditorGateway {
     if (entry && (!(info instanceof MarkdownView) || info.file !== entry.file || info.editor !== entry.editor)) { this.remove(update.view); entry = undefined; }
     if (!entry) { this.register(update.view); entry = this.cms.get(update.view); }
     if (!entry) return;
-    if (update.docChanged) entry.revision++;
+    if (update.docChanged) {
+      entry.revision++;
+      const ref = this.fileRef(entry.file);
+      this.contentListeners.forEach((listener) => listener(ref, entry.file.path));
+    }
     if ((update.selectionSet || update.focusChanged) && update.view.hasFocus) {
       for (const binding of this.bindings) if (binding.editorId === entry.id) {
         try { binding.ticket = this.capture(entry.id, binding.generation); } catch { binding.ticket = undefined; }

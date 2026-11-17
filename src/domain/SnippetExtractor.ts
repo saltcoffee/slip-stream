@@ -11,9 +11,14 @@ export interface Snippet {
   truncated: boolean;
 }
 
-type Character = { value: string; offset: number };
-function visible(raw: string, from: number): Character[] {
-  let chars = Array.from({ length: raw.length }, (_, i) => ({ value: raw[i], offset: from + i }));
+export type VisibleCharacter = { value: string; offset: number };
+
+/**
+ * 逐字符投影：删除 Markdown 结构／强调标记，保留每个可见字符对应的原文 UTF-16 偏移。
+ * 偏移单调、与输出字符一一对应；调用方不得用全文搜索反推位置。
+ */
+export function visibleCharacters(raw: string, from: number): VisibleCharacter[] {
+  let chars: VisibleCharacter[] = Array.from({ length: raw.length }, (_, i) => ({ value: raw[i], offset: from + i }));
   const remove = (pattern: RegExp, keep?: number) => {
     const text = chars.map((c) => c.value).join("");
     const ranges = [...text.matchAll(pattern)].reverse();
@@ -33,6 +38,10 @@ function visible(raw: string, from: number): Character[] {
   remove(/==|\*\*|__|~~|`/g);
   remove(/[ \t]\^[A-Za-z0-9-]+[ \t]*$/g);
   return chars;
+}
+
+function visible(raw: string, from: number): VisibleCharacter[] {
+  return visibleCharacters(raw, from);
 }
 
 function snippet(id: string, block: SourceBlock, raw: string, offset: number, limit: number): Snippet | undefined {

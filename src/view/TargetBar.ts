@@ -9,7 +9,8 @@ export class TargetBar {
   readonly el: HTMLElement;
   private unsubscribe: () => void;
   constructor(private app: App, private editors: EditorGateway, private binding: () => TargetBinding | undefined,
-    private choose: (editorId: string) => void, private precisionEnabled: () => boolean, private settings: () => void) {
+    private choose: (editorId: string) => void, private precisionEnabled: () => boolean, private settings: () => void,
+    private savedTarget?: () => string | undefined) {
     this.el = createDiv({ cls: "slipstream-targetbar" });
     this.unsubscribe = editors.subscribe(() => this.render());
     this.render();
@@ -17,7 +18,9 @@ export class TargetBar {
   render(): void {
     this.el.empty();
     const binding = this.binding();
+    const saved = this.savedTarget?.();
     let label = t("target.none");
+    if (!binding && saved) label = t("desk.targetPending", { path: saved });
     if (binding) {
       try {
         const ticket = this.editors.ticket(binding);
@@ -30,6 +33,7 @@ export class TargetBar {
     }
     this.el.createDiv({ cls: "slipstream-target-status", text: label, attr: { role: "status" } });
     this.el.createEl("button", { cls: "slipstream-btn", text: t("target.choose") }).addEventListener("click", () => this.openChooser());
+    if (!binding && saved) this.el.createEl("button", { cls: "slipstream-btn", text: t("desk.targetOpen") }).addEventListener("click", () => { void this.app.workspace.openLinkText(saved, "", false); });
     if (binding) this.el.createEl("button", { cls: "slipstream-btn", text: t("target.show") }).addEventListener("click", () => {
       try { this.editors.show(binding); } catch { this.openChooser(); }
     });

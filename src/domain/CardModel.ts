@@ -13,6 +13,8 @@ export interface CardModel {
   highlights: string[];
   callouts: string[];
   frontmatter: Record<string, unknown>;
+  /** 本卡片命中的来源标签（文件夹／标签／入链／出链／手动）。 */
+  sources?: string[];
 }
 
 function normalizeTag(tag: string): string {

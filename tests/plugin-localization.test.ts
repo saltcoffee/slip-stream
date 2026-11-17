@@ -24,7 +24,7 @@ describe("runtime localization", () => {
     expect(commands.get("set-citation-target")?.name).toBe("Set current note as citation target");
     setLanguage("zh"); plugin.relocalizeViews();
     expect(commands.get("set-citation-target")?.name).toBe("将当前笔记设为引用目标");
-    expect(commands.size).toBe(6);
+    expect(commands.size).toBe(11);
     setLanguage("en"); plugin.relocalizeViews();
     expect(commands.get("set-citation-target")?.name).toBe("Set current note as citation target");
   });

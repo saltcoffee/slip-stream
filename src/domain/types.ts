@@ -47,6 +47,7 @@ export interface SourceBlock {
   rawRange: { from: number; to: number };
   blockKey: string;
   heading?: string;
+  headingLevel?: number;
   listRange?: BlockRange;
   depth?: number;
 }

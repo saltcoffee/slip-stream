@@ -48,6 +48,7 @@ export class CardView {
   constructor(private opts: CardViewOptions) {
     const { card, collapsed, pinned } = opts;
     this.el = createDiv({ cls: "slipstream-card" });
+    this.el.setAttribute("data-path", card.path);
     if (pinned) this.el.addClass("is-pinned");
     if (collapsed) this.el.addClass("is-collapsed");
 
@@ -57,6 +58,10 @@ export class CardView {
       e.stopPropagation();
       this.openFile();
     });
+    if (card.sources?.length) {
+      const sources = header.createSpan({ cls: "slipstream-card-sources", text: card.sources.join(" · ") });
+      sources.setAttribute("aria-label", card.sources.join(", "));
+    }
     this.metaEl = header.createSpan({
       cls: "slipstream-card-meta",
       text: opts.density === "compact" && card.wordCount === 0
@@ -112,11 +117,20 @@ export class CardView {
     if (!collapsed && this.opts.density === "compact") void this.ensureRendered();
   }
 
-  async ensureRendered(): Promise<void> {
-    if (this.disposed || this.rendered || this.rendering) return;
-    if (this.opts.density === "compact" && this.el.hasClass("is-collapsed")) return;
+  private renderPromise?: Promise<void>;
+
+  ensureRendered(): Promise<void> {
+    if (this.disposed || this.rendered) return Promise.resolve();
+    if (this.opts.density === "compact" && this.el.hasClass("is-collapsed")) return Promise.resolve();
+    if (this.renderPromise) return this.renderPromise;
+    const generation = this.generation + 1;
+    this.renderPromise = this.doRender(generation).finally(() => { this.renderPromise = undefined; });
+    return this.renderPromise;
+  }
+
+  private async doRender(generation: number): Promise<void> {
     this.rendering = true;
-    const generation = ++this.generation;
+    this.generation = generation;
     this.bodyEl.setCssProps({ "--slipstream-min-height": "" });
     try {
       this.component = new Component();
@@ -155,7 +169,7 @@ export class CardView {
     if (!this.rendered && !this.rendering) return;
     const height = this.bodyEl.offsetHeight;
     this.bodyEl.setCssProps({ "--slipstream-min-height": `${height}px` });
-    this.generation++; this.rendering = false;
+    this.generation++; this.rendering = false; this.renderPromise = undefined;
     this.actions?.destroy(); this.actions = undefined; this.elements = [];
     this.component?.unload();
     this.component = undefined;
@@ -164,7 +178,7 @@ export class CardView {
   }
 
   destroy(): void {
-    this.disposed = true; this.generation++;
+    this.disposed = true; this.generation++; this.renderPromise = undefined;
     this.actions?.destroy();
     this.component?.unload();
     this.component = undefined;
