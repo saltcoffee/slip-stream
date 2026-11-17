@@ -21,37 +21,58 @@ export class CardStream {
   setCards(cards: CardModel[]): void {
     this.destroy();
     this.container.empty();
+    this.ensureObserver();
+    for (const card of cards) this.mountCard(card);
+  }
 
-    if (this.plugin.settings.virtualScroll) {
-      this.observer = new IntersectionObserver(
-        (entries) => {
-          for (const entry of entries) {
-            const view = (entry.target as HTMLElement & { _cardView?: CardView })._cardView;
-            if (!view) continue;
-            if (entry.isIntersecting) void view.ensureRendered();
-            else view.unloadBody();
-          }
-        },
-        { root: this.container, rootMargin: "400px" }
-      );
-    }
-
+  /** 增量追加未挂载卡片；已存在卡片、选区与引用任务不受影响。 */
+  appendCards(cards: CardModel[]): void {
+    this.ensureObserver();
     for (const card of cards) {
-      const view = new CardView({
-        plugin: this.plugin,
-        card,
-        density: this.density(),
-        collapsed: this.isCollapsed(card.path),
-        pinned: this.isPinned(card.path),
-        host: this.host,
-      });
-      (view.el as HTMLElement & { _cardView?: CardView })._cardView = view;
-      this.views.set(card.path, view);
-      this.container.appendChild(view.el);
-      if (this.observer) this.observer.observe(view.el);
-      else void view.ensureRendered();
+      if (this.views.has(card.path)) continue;
+      this.mountCard(card);
     }
   }
+
+  private ensureObserver(): void {
+    if (!this.plugin.settings.virtualScroll || this.observer) return;
+    this.observer = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          const view = (entry.target as HTMLElement & { _cardView?: CardView })._cardView;
+          if (!view) continue;
+          if (entry.isIntersecting) void view.ensureRendered();
+          else view.unloadBody();
+        }
+      },
+      { root: this.container, rootMargin: "400px" }
+    );
+  }
+
+  private mountCard(card: CardModel): void {
+    const view = new CardView({
+      plugin: this.plugin,
+      card,
+      density: this.density(),
+      collapsed: this.isCollapsed(card.path),
+      pinned: this.isPinned(card.path),
+      host: this.host,
+    });
+    (view.el as HTMLElement & { _cardView?: CardView })._cardView = view;
+    this.views.set(card.path, view);
+    this.container.appendChild(view.el);
+    if (this.observer) this.observer.observe(view.el);
+    else void view.ensureRendered();
+  }
+
+  async ensureCardRendered(path: string): Promise<void> {
+    const view = this.views.get(path);
+    if (view) await view.ensureRendered();
+  }
+
+  has(path: string): boolean { return this.views.has(path); }
+  paths(): string[] { return [...this.views.keys()]; }
+  viewCount(): number { return this.views.size; }
 
   collapseAll(collapsed: boolean): void {
     for (const view of this.views.values()) {

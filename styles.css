@@ -294,3 +294,103 @@
   gap: 8px;
   padding-top: 8px;
 }
+
+/* 0.1.5 书桌、来源组合与聚焦结果 */
+.slipstream-root .is-hidden { display: none !important; }
+.slipstream-deskbar,
+.slipstream-focusbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+.slipstream-desk-label {
+  font-weight: var(--font-semibold);
+  margin-right: auto;
+}
+.slipstream-source-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  min-width: 0;
+}
+.slipstream-source-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 6px;
+  border-radius: var(--radius-s);
+  background: var(--background-secondary);
+  font-size: var(--font-ui-smaller);
+  overflow-wrap: anywhere;
+}
+.slipstream-source-chip.is-manual { border: 1px dashed var(--background-modifier-border); }
+.slipstream-chip-remove { cursor: pointer; border: none; background: transparent; color: var(--text-muted); }
+.slipstream-source-empty { color: var(--text-muted); font-size: var(--font-ui-smaller); }
+.slipstream-focusbar input[type="text"] { flex: 1; min-width: 120px; }
+.slipstream-focus-hidden { display: inline-flex; align-items: center; gap: 4px; font-size: var(--font-ui-smaller); }
+.slipstream-focus-progress { flex-basis: 100%; color: var(--text-muted); font-size: var(--font-ui-smaller); }
+.slipstream-focus-results-wrap { flex: 1; overflow-y: auto; padding: 8px; min-height: 0; }
+.slipstream-focus-group { margin-bottom: 12px; }
+.slipstream-focus-group-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+.slipstream-focus-group-title { font-weight: var(--font-semibold); overflow-wrap: anywhere; }
+.slipstream-focus-group-count { color: var(--text-muted); font-size: var(--font-ui-smaller); }
+.slipstream-focus-result {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--background-modifier-border);
+  overflow-wrap: anywhere;
+}
+.slipstream-focus-result.is-cursor { outline: 2px solid var(--interactive-accent); outline-offset: -2px; }
+.slipstream-focus-result-meta { display: flex; gap: 8px; font-size: var(--font-ui-smaller); color: var(--text-muted); }
+.slipstream-focus-preview { white-space: pre-wrap; user-select: text; }
+.slipstream-focus-preview mark, .slipstream-section-text mark { background: var(--text-highlight-bg); color: inherit; border-radius: 2px; }
+.slipstream-focus-actions { display: flex; flex-wrap: wrap; gap: 6px; padding-top: 4px; }
+.slipstream-form-row { display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; }
+.slipstream-form-error { color: var(--text-error); min-height: 1em; }
+.slipstream-desk-manage-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 6px 0; border-bottom: 1px solid var(--background-modifier-border); }
+.slipstream-desk-manage-main { flex: 1; min-width: 0; }
+.slipstream-desk-target { color: var(--text-muted); font-size: var(--font-ui-smaller); overflow-wrap: anywhere; }
+.slipstream-desk-dirty { color: var(--text-warning); font-size: var(--font-ui-smaller); }
+.slipstream-statusbar .is-warning { color: var(--text-warning); }
+.slipstream-card-sources {
+  color: var(--text-faint);
+  font-size: var(--font-ui-smaller);
+  max-width: 40%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.slipstream-focus-result { position: relative; padding-left: 22px; }
+.slipstream-focus-drag {
+  position: absolute;
+  left: 2px;
+  top: 6px;
+  width: 16px;
+  cursor: grab;
+  color: var(--text-muted);
+  user-select: none;
+  font-size: 12px;
+}
+.slipstream-focus-drag::before { content: "⠿"; }
+.slipstream-focus-section { margin-top: 6px; }
+.slipstream-section-status { color: var(--text-muted); font-size: var(--font-ui-smaller); }
+.slipstream-section-controls { display: flex; flex-wrap: wrap; gap: 6px; }
+.slipstream-section-text {
+  user-select: text;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 40vh;
+  overflow-y: auto;
+  background: var(--background-secondary);
+  padding: 6px 8px;
+  border-radius: var(--radius-s);
+  font-size: var(--font-ui-smaller);
+}

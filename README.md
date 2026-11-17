@@ -13,6 +13,9 @@
 - **Click, keyboard and drag citations**: bind a draft and insertion position, cite selected text or whole paragraphs, or drag to the actual receiving editor.
 - **Verified sources**: cite the displayed excerpt or complete selection, retaining Markdown for whole blocks. Precision is shown as whole block, fragment, multi-block start, heading or file. Full source paths distinguish notes with the same name.
 - **Citation records**: distinguish inserts from copies and retain real target paths. Successful inserts also save independent, minimal verification snapshots.
+- **Named desks (0.1.5)**: save the current browse as a desk with its own target note, source combination and reading state — density, filter, sort, pins, hidden cards and reading position — then switch desks later without rebuilding.
+- **Full collections (0.1.5)**: combine folders, tags, backlinks, outlinks and manually added notes; every member is loaded in configurable batches instead of being truncated.
+- **Desk-wide body search (0.1.5)**: search every note in a desk, including notes that are not loaded or rendered, then focus on highlights, callouts or both, and cite the matched paragraph with its real source range.
 
 ## Installation
 
@@ -25,8 +28,8 @@
 ## Quick start
 
 1. **Right-click a folder** in the file explorer → "Open in SlipStream"; or run `SlipStream: Open` from the command palette.
-2. Switch the data source on top (folder / tag / backlinks / outlinks).
-3. Use the toolbar to change density, filter and sort.
+2. Add sources on top (folder / tag / backlinks / outlinks / manual note). Use **Save as desk** to keep the current sources, target and reading state as a named desk.
+3. Use the toolbar to change density, metadata filter and sort; use **Search desk body** to find paragraphs across the whole collection.
 4. Place the cursor or selection in your draft and run `SlipStream: Set current note as citation target`, or use **Choose target**. Reading another note keeps this binding. Closing the view or restarting requires choosing again.
 5. Select text in a card or open its paragraph **⋯** actions, then choose **Cite to target**. Tab reaches paragraph actions, Up/Down moves between fragments, Enter/Space opens actions, and Escape cancels. Header copy uses a valid selection and never guesses the first block.
 6. Alternatively, drag a paragraph handle to a draft. Drops use the receiving editor and honor replace/append inside its selection. Multiple cursors, expired positions and unmappable drops stop with a recovery message.

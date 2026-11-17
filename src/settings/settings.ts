@@ -6,7 +6,8 @@ export interface Settings {
   defaultPlacement: "right-sidebar" | "split";
   includeSubfolders: boolean;
   excludeGlobs: string;
-  collectionLimit: number;
+  /** 每批加载数量；不再是集合上限。 */
+  collectionPageSize: number;
   excerptLength: number;
   snippetIncludeHighlights: boolean;
   snippetIncludeCallouts: boolean;
@@ -34,7 +35,7 @@ export const DEFAULT_SETTINGS: Settings = {
   defaultPlacement: "right-sidebar",
   includeSubfolders: true,
   excludeGlobs: "",
-  collectionLimit: 200,
+  collectionPageSize: 200,
   excerptLength: 150,
   snippetIncludeHighlights: true,
   snippetIncludeCallouts: true,

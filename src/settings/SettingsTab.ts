@@ -39,7 +39,7 @@ export class SlipStreamSettingsTab extends PluginSettingTab {
       }),
       d("set.includeSub", { type: "toggle", key: "includeSubfolders" }),
       d("set.exclude", { type: "text", key: "excludeGlobs" }),
-      d("set.limit", { type: "number", key: "collectionLimit", min: 1 }),
+      d("set.pageSize", { type: "number", key: "collectionPageSize", min: 1 }),
       d("set.excerpt", { type: "number", key: "excerptLength", min: 20 }),
       d("set.includeHighlights", { type: "toggle", key: "snippetIncludeHighlights" }),
       d("set.includeCallouts", { type: "toggle", key: "snippetIncludeCallouts" }),
@@ -132,7 +132,7 @@ export class SlipStreamSettingsTab extends PluginSettingTab {
     this.heading(containerEl, "set.sources");
     this.addToggle(containerEl, "set.includeSub", "includeSubfolders");
     this.addText(containerEl, "set.exclude", "excludeGlobs");
-    this.addNumber(containerEl, "set.limit", "collectionLimit");
+    this.addNumber(containerEl, "set.pageSize", "collectionPageSize");
 
     this.heading(containerEl, "set.card");
     this.addNumber(containerEl, "set.excerpt", "excerptLength");
@@ -182,7 +182,7 @@ export class SlipStreamSettingsTab extends PluginSettingTab {
   }
 
   private description(key: string): string {
-    const descriptions: Record<string, string> = { "set.blockPrecision": "set.anchorDesc", "set.dedupe": "set.dedupeDesc", "set.historyEnabled": "set.recordDesc" };
+    const descriptions: Record<string, string> = { "set.blockPrecision": "set.anchorDesc", "set.dedupe": "set.dedupeDesc", "set.historyEnabled": "set.recordDesc", "set.pageSize": "set.pageSizeDesc" };
     return descriptions[key] ? t(descriptions[key]) : "";
   }
   openCitationManager(): void {
@@ -262,7 +262,7 @@ export class SlipStreamSettingsTab extends PluginSettingTab {
   private addNumber(
     el: HTMLElement,
     nameKey: string,
-    key: "collectionLimit" | "excerptLength" | "snippetCalloutLimit" | "historyLimit" | "renderConcurrency"
+    key: "collectionPageSize" | "excerptLength" | "snippetCalloutLimit" | "historyLimit" | "renderConcurrency"
   ): void {
     new Setting(el).setName(t(nameKey)).addText((text) => {
       text.inputEl.type = "number";

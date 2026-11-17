@@ -30,6 +30,7 @@ export class SlipStreamView extends ItemView {
   }
 
   async onClose(): Promise<void> {
+    await this.controller?.prepareClose();
     this.controller?.destroy();
   }
 
@@ -53,6 +54,10 @@ export class SlipStreamView extends ItemView {
 
   bindTarget(editorId: string): void { this.controller?.bindTarget(editorId); }
   refreshCitationContext(): void { this.controller?.refreshCitationContext(); }
+  openCreateDeskForm(): void { this.controller?.openCreateDeskForm(); }
+  openDeskSelector(): void { this.controller?.openDeskSelector(); }
+  focusSearchInput(): void { this.controller?.focusSearchInput(); }
+  moveFocus(delta: number): void { this.controller?.move(delta); }
 
   refreshFromExternal(): void {
     this.controller?.refreshSilent();

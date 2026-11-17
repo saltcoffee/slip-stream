@@ -53,6 +53,7 @@ export function mapBlocks(source: string, bodyStart = 0): SourceBlock[] {
     const blockId = inlineBlockId(raw, type) ?? (type !== "list_item" ? standaloneId(source, to) : undefined);
     out.push({ startLine, endLine, content: raw, type, rawRange: { from, to },
       blockKey: `${type}:${from}`, blockId, hasBlockId: !!blockId, heading,
+      ...(type === "heading" ? { headingLevel: Number(token.tag.slice(1)) } : {}),
       listRange: type === "list_item" ? listRange : undefined, depth: token.level });
   }
   return out;

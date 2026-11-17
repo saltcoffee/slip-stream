@@ -23,6 +23,7 @@ export function installObsidianDom(): void {
     },
     empty(this: HTMLElement) { this.replaceChildren(); },
     addClass(this: HTMLElement, name: string) { this.classList.add(name); },
+    removeClass(this: HTMLElement, name: string) { this.classList.remove(name); },
     hasClass(this: HTMLElement, name: string) { return this.classList.contains(name); },
     toggleClass(this: HTMLElement, name: string, force: boolean) { this.classList.toggle(name, force); },
     setText(this: HTMLElement, text: string) { this.textContent = text; },
