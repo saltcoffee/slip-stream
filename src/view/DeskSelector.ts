@@ -11,7 +11,7 @@ export interface DeskSelectorHost {
   desks(): Desk[];
   recentDesks(): Desk[];
   isDirty(id: string): boolean;
-  openDesk(id: string): void;
+  openDesk(id: string): Promise<void>;
   createDesk(name: string, targetPath: string, operationId: string): Promise<DeskFormResult>;
   renameDesk(id: string, name: string): Promise<DeskFormResult>;
   deleteDesk(id: string): Promise<void>;
@@ -57,7 +57,7 @@ export class DeskSelector {
 }
 
 class DeskListModal extends SuggestModal<Desk> {
-  constructor(private host: DeskSelectorHost, private choose: (desk: Desk) => void, private create: () => void) {
+  constructor(private host: DeskSelectorHost, private choose: (desk: Desk) => Promise<void>, private create: () => void) {
     super(host.app);
     this.setPlaceholder(t("desk.manage"));
     this.emptyStateText = t("desk.empty");
@@ -72,7 +72,9 @@ class DeskListModal extends SuggestModal<Desk> {
     el.createDiv({ text: desk.name });
     el.createDiv({ cls: "slipstream-desk-target", text: desk.targetPath || t("desk.noTarget") });
   }
-  onChooseSuggestion(desk: Desk): void { this.choose(desk); }
+  onChooseSuggestion(desk: Desk): void {
+    void this.choose(desk).catch(() => { new Notice(t("state.error")); });
+  }
   onClose(): void { super.onClose(); }
   open(): void { super.open(); }
   // Provide a create entry from the command palette path.
@@ -144,7 +146,9 @@ export class DeskManageModal extends Modal {
       main.createDiv({ text: desk.name });
       main.createDiv({ cls: "slipstream-desk-target", text: desk.targetPath || t("desk.noTarget") });
       if (this.host.isDirty(desk.id)) main.createDiv({ cls: "slipstream-desk-dirty", text: t("desk.unsaved") });
-      row.createEl("button", { cls: "slipstream-btn", text: t("desk.open") }).addEventListener("click", () => { this.host.openDesk(desk.id); this.close(); });
+      row.createEl("button", { cls: "slipstream-btn", text: t("desk.open") }).addEventListener("click", () => {
+        void this.host.openDesk(desk.id).then(() => { this.close(); }, () => { new Notice(t("state.error")); });
+      });
       row.createEl("button", { cls: "slipstream-btn", text: t("desk.rename") }).addEventListener("click", () => { new RenameModal(this.host, desk, () => this.render()).open(); });
       row.createEl("button", { cls: "slipstream-btn", text: t("desk.delete") }).addEventListener("click", () => { void this.remove(desk); });
     }
@@ -156,7 +160,10 @@ export class DeskManageModal extends Modal {
       const actions = modal.contentEl.createDiv({ cls: "slipstream-prompt-actions" });
       actions.createEl("button", { cls: "slipstream-btn", text: t("common.cancel") }).addEventListener("click", () => modal.close());
       actions.createEl("button", { cls: "slipstream-btn", text: t("desk.delete") }).addEventListener("click", () => {
-        void this.host.deleteDesk(desk.id).then(() => { modal.close(); this.render(); new Notice(t("desk.deleted")); });
+        void this.host.deleteDesk(desk.id).then(
+          () => { modal.close(); this.render(); new Notice(t("desk.deleted")); },
+          () => { new Notice(t("error.DESK_SAVE_FAILED")); }
+        );
       });
     };
     modal.open();
@@ -174,10 +181,13 @@ class RenameModal extends Modal {
     const actions = this.contentEl.createDiv({ cls: "slipstream-prompt-actions" });
     actions.createEl("button", { cls: "slipstream-btn", text: t("common.cancel") }).addEventListener("click", () => this.close());
     actions.createEl("button", { cls: "slipstream-btn", text: t("common.ok") }).addEventListener("click", () => {
-      void this.host.renameDesk(this.desk.id, input.value).then((result) => {
-        if (result === "ok") { this.close(); this.done(); return; }
-        error.setText(t(result === "duplicateName" ? "desk.nameDuplicate" : "desk.nameTooLong"));
-      });
+      void this.host.renameDesk(this.desk.id, input.value).then(
+        (result) => {
+          if (result === "ok") { this.close(); this.done(); return; }
+          error.setText(t(result === "duplicateName" ? "desk.nameDuplicate" : "desk.nameTooLong"));
+        },
+        () => { error.setText(t("error.DESK_SAVE_FAILED")); }
+      );
     });
   }
 }

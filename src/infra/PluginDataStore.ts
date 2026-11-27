@@ -4,6 +4,10 @@ import type { CitationHistoryEntry, CitationRelation } from "../domain/citationT
 import { validRange } from "../domain/citationTypes";
 import type { Desk, DeskReadingState, DeskRule, ReadingAnchor, UnresolvedRef } from "../domain/deskTypes";
 import { defaultReadingState, isSupportedSourceKind, isValidDeskName, normalizeDeskName } from "../domain/deskTypes";
+import type { EntryLastInsertion, EvidenceEntry, EvidenceOutline, OutlineGroup } from "../domain/outlineTypes";
+import { emptyOutline, isNormalizedMarkdownPath, isValidEvidenceSnapshot, isValidGroupName, normalizeGroupName } from "../domain/outlineTypes";
+
+export type DeskV2 = Omit<Desk, "outline">;
 
 export interface PersistedDataV2 extends Record<string, unknown> {
   schemaVersion: 2;
@@ -11,11 +15,21 @@ export interface PersistedDataV2 extends Record<string, unknown> {
   history: CitationHistoryEntry[];
   relations: CitationRelation[];
   consent: { blockIdExplanationAccepted: boolean };
+  desks: DeskV2[];
+}
+
+export interface PersistedDataV3 extends Record<string, unknown> {
+  schemaVersion: 3;
+  settings: Settings;
+  history: CitationHistoryEntry[];
+  relations: CitationRelation[];
+  consent: { blockIdExplanationAccepted: boolean };
   desks: Desk[];
+  lastCommitSequence: number;
 }
 
 /** 兼容旧类型名，外部只依赖“根状态对象”。 */
-export type PersistedData = PersistedDataV2;
+export type PersistedData = PersistedDataV3;
 
 export interface SaveReceipt {
   persistedRevision: number;
@@ -23,7 +37,7 @@ export interface SaveReceipt {
 
 interface DataPort {
   load(): Promise<unknown>;
-  save(data: PersistedDataV2): Promise<void>;
+  save(data: PersistedDataV3): Promise<void>;
   backup(raw: unknown): Promise<void>;
 }
 
@@ -81,10 +95,14 @@ function historyEntry(raw: unknown, legacy: boolean): CitationHistoryEntry | und
   if (["block", "fragment", "multi-block-start", "heading", "file"].includes(String(raw.precision))) entry.precision = raw.precision as CitationHistoryEntry["precision"];
   return entry;
 }
+
 function relation(raw: unknown): raw is CitationRelation {
   if (!object(raw) || !["id", "operationId", "sourcePath", "targetPath", "content", "insertedText"].every((k) => typeof raw[k] === "string") ||
+    !isNormalizedMarkdownPath(raw.sourcePath) || !isNormalizedMarkdownPath(raw.targetPath) ||
     typeof raw.at !== "number" || !Number.isFinite(raw.at) || !["A", "B", "C", "D"].includes(String(raw.template)) ||
-    !["verified", "stale-snapshot"].includes(String(raw.sourceState)) || !["block", "fragment", "multi-block-start", "heading", "file"].includes(String(raw.precision))) return false;
+    !["verified", "stale-snapshot", "missing-snapshot", "unavailable-snapshot"].includes(String(raw.sourceState)) ||
+    !["block", "fragment", "multi-block-start", "heading", "file"].includes(String(raw.precision))) return false;
+  if (raw.batchId !== undefined && (typeof raw.batchId !== "string" || !raw.batchId)) return false;
   if (!Array.isArray(raw.sourceSpans) || !raw.sourceSpans.every((s) => object(s) && typeof s.rawText === "string" && object(s.range) &&
     validRange(s.range as unknown as { from: number; to: number }, Number.MAX_SAFE_INTEGER) &&
     ["paragraph", "list", "list_item", "heading", "callout", "blockquote", "code", "table", "other"].includes(String(s.kind)))) return false;
@@ -180,13 +198,97 @@ function parseUnresolved(raw: unknown): UnresolvedRef | undefined {
   return ref;
 }
 
-function parseDesk(raw: unknown, seen: Set<string>): DeskParse {
+function parseLastInsertion(raw: unknown, maxCommitSequence: number): EntryLastInsertion | undefined {
+  if (!object(raw)) return;
+  if (typeof raw.batchId !== "string" || !raw.batchId) return;
+  if (typeof raw.operationId !== "string" || !raw.operationId) return;
+  if (!isNormalizedMarkdownPath(raw.targetPath)) return;
+  if (typeof raw.at !== "number" || !Number.isFinite(raw.at)) return;
+  if (typeof raw.contentRevision !== "number" || !Number.isSafeInteger(raw.contentRevision) || raw.contentRevision < 1) return;
+  if (typeof raw.commitSequence !== "number" || !Number.isSafeInteger(raw.commitSequence) || raw.commitSequence < 1 || raw.commitSequence > maxCommitSequence) return;
+  return {
+    batchId: raw.batchId,
+    operationId: raw.operationId,
+    targetPath: raw.targetPath,
+    at: raw.at,
+    contentRevision: raw.contentRevision,
+    commitSequence: raw.commitSequence,
+  };
+}
+
+function parseOutline(raw: unknown, maxCommitSequence: number): { outline?: EvidenceOutline; changed: boolean; invalid: boolean } {
+  if (!object(raw) || !Array.isArray(raw.groups) || !Array.isArray(raw.entries)) {
+    return { changed: false, invalid: true };
+  }
+  let changed = false;
+  const groups: OutlineGroup[] = [];
+  const seenGroupIds = new Set<string>();
+  const seenGroupNames = new Set<string>();
+  for (const rawGroup of raw.groups) {
+    if (!object(rawGroup) || typeof rawGroup.id !== "string" || !rawGroup.id || seenGroupIds.has(rawGroup.id)) {
+      return { changed: false, invalid: true };
+    }
+    if (typeof rawGroup.name !== "string" || !isValidGroupName(rawGroup.name)) {
+      return { changed: false, invalid: true };
+    }
+    const name = normalizeGroupName(rawGroup.name);
+    const lower = name.toLowerCase();
+    if (seenGroupNames.has(lower)) return { changed: false, invalid: true };
+    seenGroupIds.add(rawGroup.id);
+    seenGroupNames.add(lower);
+    if (name !== rawGroup.name) changed = true;
+    groups.push({ id: rawGroup.id, name });
+  }
+
+  const entries: EvidenceEntry[] = [];
+  const seenEntryIds = new Set<string>();
+  for (const rawEntry of raw.entries) {
+    if (!object(rawEntry) || typeof rawEntry.id !== "string" || !rawEntry.id || seenEntryIds.has(rawEntry.id)) {
+      return { changed: false, invalid: true };
+    }
+    seenEntryIds.add(rawEntry.id);
+    if (rawEntry.groupId !== null && (typeof rawEntry.groupId !== "string" || !seenGroupIds.has(rawEntry.groupId))) {
+      return { changed: false, invalid: true };
+    }
+    if (typeof rawEntry.note !== "string") return { changed: false, invalid: true };
+    if (typeof rawEntry.contentRevision !== "number" || !Number.isSafeInteger(rawEntry.contentRevision) || rawEntry.contentRevision < 1) {
+      return { changed: false, invalid: true };
+    }
+    if (typeof rawEntry.createdAt !== "number" || !Number.isFinite(rawEntry.createdAt) ||
+      typeof rawEntry.updatedAt !== "number" || !Number.isFinite(rawEntry.updatedAt)) {
+      return { changed: false, invalid: true };
+    }
+    if (!isValidEvidenceSnapshot(rawEntry.snapshot)) {
+      return { changed: false, invalid: true };
+    }
+    let lastInsertion: EntryLastInsertion | undefined;
+    if (rawEntry.lastInsertion !== undefined) {
+      lastInsertion = parseLastInsertion(rawEntry.lastInsertion, maxCommitSequence);
+      if (!lastInsertion) return { changed: false, invalid: true };
+    }
+    entries.push({
+      id: rawEntry.id,
+      groupId: rawEntry.groupId,
+      snapshot: rawEntry.snapshot,
+      note: rawEntry.note,
+      contentRevision: rawEntry.contentRevision,
+      createdAt: rawEntry.createdAt,
+      updatedAt: rawEntry.updatedAt,
+      ...(lastInsertion ? { lastInsertion } : {}),
+    });
+  }
+  return { outline: { groups, entries }, changed, invalid: false };
+}
+
+function parseDesk(raw: unknown, seen: Set<string>, expectOutline: boolean, maxCommitSequence: number): DeskParse {
   if (!object(raw)) return { changed: false, invalid: "data.invalidDesks" };
   if (typeof raw.id !== "string" || !raw.id) return { changed: false, invalid: "data.invalidDesks" };
   if (seen.has(raw.id)) return { changed: false, invalid: "data.invalidDesks" };
   seen.add(raw.id);
   if (typeof raw.name !== "string" || !isValidDeskName(raw.name)) return { changed: false, invalid: "data.invalidDesks" };
-  if (typeof raw.targetPath !== "string") return { changed: false, invalid: "data.invalidDesks" };
+  if (typeof raw.targetPath !== "string" || (raw.targetPath !== "" && !isNormalizedMarkdownPath(raw.targetPath))) {
+    return { changed: false, invalid: "data.invalidDesks" };
+  }
   if (!Array.isArray(raw.rules) || !Array.isArray(raw.manualPaths)) return { changed: false, invalid: "data.invalidDesks" };
   if (typeof raw.createdAt !== "number" || !Number.isFinite(raw.createdAt) ||
     typeof raw.updatedAt !== "number" || !Number.isFinite(raw.updatedAt) ||
@@ -208,15 +310,25 @@ function parseDesk(raw: unknown, seen: Set<string>): DeskParse {
   const unresolvedRefs = Array.isArray(raw.unresolvedRefs)
     ? raw.unresolvedRefs.map(parseUnresolved).filter((value): value is UnresolvedRef => !!value) : [];
   if (Array.isArray(raw.unresolvedRefs) && unresolvedRefs.length !== raw.unresolvedRefs.length) changed = true;
+
+  let outline: EvidenceOutline = emptyOutline();
+  if (expectOutline) {
+    const parsedOutline = parseOutline(raw.outline, maxCommitSequence);
+    if (parsedOutline.invalid || !parsedOutline.outline) return { changed: false, invalid: "data.invalidDesks" };
+    outline = parsedOutline.outline;
+    changed = changed || parsedOutline.changed;
+  }
+
   const desk: Desk = {
     id: raw.id,
     name: normalizeDeskName(raw.name),
-    targetPath: raw.targetPath,
+    targetPath: raw.targetPath as string,
     rules,
     manualPaths,
     reading,
     ...(anchor ? { anchor } : {}),
     unresolvedRefs,
+    outline,
     createdAt: raw.createdAt,
     updatedAt: raw.updatedAt,
     lastOpenedAt: raw.lastOpenedAt,
@@ -225,15 +337,33 @@ function parseDesk(raw: unknown, seen: Set<string>): DeskParse {
   return { desk, changed };
 }
 
-interface V2Parse {
-  data: PersistedDataV2;
+interface RootParse {
+  data: PersistedDataV3;
   changed: boolean;
   invalid?: string;
 }
 
-function parseV2(raw: Record<string, unknown>): V2Parse {
-  const legacy = false;
-  const history = Array.isArray(raw.history) ? raw.history.map((r) => historyEntry(r, legacy)).filter((r): r is CitationHistoryEntry => !!r) : [];
+function emptyV3(): PersistedDataV3 {
+  return {
+    schemaVersion: 3,
+    settings: { ...DEFAULT_SETTINGS },
+    history: [],
+    relations: [],
+    consent: { blockIdExplanationAccepted: false },
+    desks: [],
+    lastCommitSequence: 0,
+  };
+}
+
+function parseRoot(raw: Record<string, unknown>, expectOutline: boolean): RootParse {
+  let lastCommitSequence = 0;
+  if (expectOutline) {
+    if (typeof raw.lastCommitSequence !== "number" || !Number.isSafeInteger(raw.lastCommitSequence) || raw.lastCommitSequence < 0) {
+      return { data: emptyV3(), changed: false, invalid: "data.readonly" };
+    }
+    lastCommitSequence = raw.lastCommitSequence;
+  }
+  const history = Array.isArray(raw.history) ? raw.history.map((r) => historyEntry(r, false)).filter((r): r is CitationHistoryEntry => !!r) : [];
   const relations = Array.isArray(raw.relations) ? raw.relations.filter(relation) : [];
   let changed = false;
   if (raw.history !== undefined && (!Array.isArray(raw.history) || history.length !== raw.history.length)) changed = true;
@@ -241,34 +371,31 @@ function parseV2(raw: Record<string, unknown>): V2Parse {
   if (settingsNormalized(raw.settings)) changed = true;
   const desks: Desk[] = [];
   if (raw.desks !== undefined) {
-    if (!Array.isArray(raw.desks)) return { data: emptyV2(), changed: false, invalid: "data.invalidDesks" };
+    if (!Array.isArray(raw.desks)) return { data: emptyV3(), changed: false, invalid: "data.invalidDesks" };
     const seen = new Set<string>();
     for (const rawDesk of raw.desks) {
-      const parsed = parseDesk(rawDesk, seen);
-      if (parsed.invalid) return { data: emptyV2(), changed: false, invalid: parsed.invalid };
+      const parsed = parseDesk(rawDesk, seen, expectOutline, lastCommitSequence);
+      if (parsed.invalid) return { data: emptyV3(), changed: false, invalid: parsed.invalid };
       if (parsed.desk) desks.push(parsed.desk);
       changed = changed || parsed.changed;
     }
   }
-  const data: PersistedDataV2 = {
+  const data: PersistedDataV3 = {
     ...raw,
-    schemaVersion: 2,
+    schemaVersion: 3,
     settings: validateSettings(raw.settings),
     history,
     relations,
     consent: { blockIdExplanationAccepted: object(raw.consent) && raw.consent.blockIdExplanationAccepted === true },
     desks,
+    lastCommitSequence,
   };
   return { data, changed };
 }
 
-function emptyV2(): PersistedDataV2 {
-  return { schemaVersion: 2, settings: { ...DEFAULT_SETTINGS }, history: [], relations: [], consent: { blockIdExplanationAccepted: false }, desks: [] };
-}
-
 /** Owns the only root state and obtains a fresh immutable snapshot when each save starts. */
 export class PluginDataStore {
-  data: PersistedDataV2 = { schemaVersion: 2, settings: { ...DEFAULT_SETTINGS }, history: [], relations: [], consent: { blockIdExplanationAccepted: false }, desks: [] };
+  data: PersistedDataV3 = emptyV3();
   readOnly = false;
   warning = "";
   /** 运行时单调根修订号；不作为跨启动必须恢复的业务数据。 */
@@ -292,8 +419,8 @@ export class PluginDataStore {
     if (raw == null) return;
     if (!object(raw)) { this.readOnly = true; this.warning = "data.readonly"; return; }
 
-    if (raw.schemaVersion === 2) {
-      const parsed = parseV2(raw);
+    if (raw.schemaVersion === 3) {
+      const parsed = parseRoot(raw, true);
       if (parsed.invalid) {
         this.readOnly = true;
         this.warning = parsed.invalid;
@@ -309,9 +436,24 @@ export class PluginDataStore {
       return;
     }
 
+    if (raw.schemaVersion === 2) {
+      const parsed = parseRoot(raw, false);
+      if (parsed.invalid) {
+        this.readOnly = true;
+        this.warning = parsed.invalid;
+        this.data.settings = validateSettings(raw.settings);
+        return;
+      }
+      this.data = parsed.data;
+      this.consentSaved = this.data.consent.blockIdExplanationAccepted;
+      try { await this.port.backup(raw); } catch { this.readOnly = true; this.warning = "data.backupFailed"; return; }
+      try { await this.save(); } catch { this.warning = "data.migrationFailed"; }
+      return;
+    }
+
     if (raw.schemaVersion !== undefined && raw.schemaVersion !== 1) { this.readOnly = true; this.warning = "data.readonly"; return; }
 
-    // v0 (no schemaVersion) / v1 → v2，一次性备份后写入。
+    // v0 (no schemaVersion) / v1 → v3，一次性备份后写入。
     const legacy = raw.schemaVersion === undefined;
     const history = Array.isArray(raw.history) ? raw.history.map((r) => historyEntry(r, legacy)).filter((r): r is CitationHistoryEntry => !!r) : [];
     const relations = !legacy && Array.isArray(raw.relations) ? raw.relations.filter(relation) : [];
@@ -319,12 +461,13 @@ export class PluginDataStore {
       !legacy && raw.relations !== undefined && (!Array.isArray(raw.relations) || relations.length !== raw.relations.length);
     this.data = {
       ...raw,
-      schemaVersion: 2,
+      schemaVersion: 3,
       settings: validateSettings(raw.settings),
       history,
       relations,
       consent: { blockIdExplanationAccepted: !legacy && object(raw.consent) && raw.consent.blockIdExplanationAccepted === true },
       desks: [],
+      lastCommitSequence: 0,
     };
     this.consentSaved = this.data.consent.blockIdExplanationAccepted;
     try { await this.port.backup(raw); } catch { this.readOnly = true; this.warning = "data.backupFailed"; return; }
@@ -336,7 +479,7 @@ export class PluginDataStore {
     const job = this.tail.catch(() => ({ persistedRevision: this.persisted })).then(async (): Promise<SaveReceipt> => {
       if (this.readOnly) throw new Error("DATA_READONLY");
       const frozen = this.rootRevision;
-      const snapshot = JSON.parse(JSON.stringify(this.data)) as PersistedDataV2;
+      const snapshot = JSON.parse(JSON.stringify(this.data)) as PersistedDataV3;
       await this.port.save(snapshot);
       this.persisted = Math.max(this.persisted, frozen);
       return { persistedRevision: this.persisted };
@@ -344,12 +487,14 @@ export class PluginDataStore {
     this.tail = job;
     return job;
   }
+
   async acceptBlockIds(): Promise<void> {
     if (this.blockIdConsentAccepted) return;
     this.data.consent.blockIdExplanationAccepted = true;
     this.touch();
     try { await this.save(); this.consentSaved = true; } catch (error) { this.data.consent.blockIdExplanationAccepted = false; throw error; }
   }
+
   flush(): Promise<SaveReceipt> { return this.save(); }
   get desks(): Desk[] { return this.data.desks; }
 }

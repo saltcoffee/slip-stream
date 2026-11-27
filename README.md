@@ -16,6 +16,9 @@
 - **Named desks (0.1.5)**: save the current browse as a desk with its own target note, source combination and reading state — density, filter, sort, pins, hidden cards and reading position — then switch desks later without rebuilding.
 - **Full collections (0.1.5)**: combine folders, tags, backlinks, outlinks and manually added notes; every member is loaded in configurable batches instead of being truncated.
 - **Desk-wide body search (0.1.5)**: search every note in a desk, including notes that are not loaded or rendered, then focus on highlights, callouts or both, and cite the matched paragraph with its real source range.
+- **Desk-private evidence outline & batch insertion (0.1.6)**: collect excerpts from cards, focus results, or selections into each desk's outline, add separate plain-text notes, organize entries into single-layer thesis groups, and run a read-only preflight and Markdown/HTML preview before writing necessary source IDs and committing once to the confirmed draft target.
+
+> Note: Optional export of an outline preview as a standalone plain Markdown file (`16-P1-A`) is deferred and not included in 0.1.6.
 
 ## Installation
 
@@ -31,8 +34,11 @@
 2. Add sources on top (folder / tag / backlinks / outlinks / manual note). Use **Save as desk** to keep the current sources, target and reading state as a named desk.
 3. Use the toolbar to change density, metadata filter and sort; use **Search desk body** to find paragraphs across the whole collection.
 4. Place the cursor or selection in your draft and run `SlipStream: Set current note as citation target`, or use **Choose target**. Reading another note keeps this binding. Closing the view or restarting requires choosing again.
-5. Select text in a card or open its paragraph **⋯** actions, then choose **Cite to target**. Tab reaches paragraph actions, Up/Down moves between fragments, Enter/Space opens actions, and Escape cancels. Header copy uses a valid selection and never guesses the first block.
-6. Alternatively, drag a paragraph handle to a draft. Drops use the receiving editor and honor replace/append inside its selection. Multiple cursors, expired positions and unmappable drops stop with a recovery message.
+5. Select text in a card or open its paragraph **⋯** actions, then choose **Cite to target** (or **Add to outline** to collect into the current desk's outline without modifying source or target notes). Tab reaches paragraph actions, Up/Down moves between fragments, Enter/Space opens actions, and Escape cancels. Header copy uses a valid selection and never guesses the first block.
+6. Switch between **Materials** and **Outline** inside the desk to add personal notes, organize entries into groups, and preview a single entry, group, or full outline before committing once to the confirmed draft.
+7. Alternatively, drag a paragraph handle to a draft. Drops use the receiving editor and honor replace/append inside its selection. Multiple cursors, expired positions and unmappable drops stop with a recovery message.
+
+Outline entries store frozen capture snapshots (separate from current source text), entries show "previously inserted" events rather than live draft verification, and undoing a batch target insertion restores the target edit in one step while newly created source block IDs remain in their source notes.
 
 The first new source block ID requires an explanation and a saved choice. Browsing, selecting and cancelling do not add IDs. Undoing a draft citation keeps the source ID. Copying follows the same rules. Disabling automatic IDs still allows verified existing IDs.
 

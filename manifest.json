@@ -1,7 +1,7 @@
 {
   "id": "slipstream",
   "name": "SlipStream",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "minAppVersion": "1.13.0",
   "description": "Turn folders and tags into a continuous, draggable card stream for effortless long-form writing.",
   "author": "gua",

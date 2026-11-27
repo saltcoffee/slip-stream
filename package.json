@@ -1,6 +1,6 @@
 {
   "name": "slipstream",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "Turn folders and tags into a continuous, draggable card stream for effortless long-form writing.",
   "main": "main.js",
   "private": true,

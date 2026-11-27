@@ -7,6 +7,8 @@ import type { Density } from "../domain/types";
 import type SlipStreamPlugin from "../main";
 import { DragHandle } from "./DragHandle";
 import { CitationActions } from "./CitationActions";
+import type { CapturedFragment } from "./CitationSelection";
+import { CitationError } from "../domain/citationTypes";
 import type { SourceSnapshot, TargetBinding } from "../domain/citationTypes";
 import { t } from "../util/i18n";
 
@@ -18,6 +20,7 @@ export interface CardHost {
   getTarget(): TargetBinding | undefined;
   getCitationFeedback(): HTMLElement;
   reselectSource(card: CardModel): void;
+  collectToOutline?(snapshot: SourceSnapshot, fragment: CapturedFragment): Promise<void>;
 }
 
 export interface CardViewOptions {
@@ -31,6 +34,7 @@ export interface CardViewOptions {
 
 /** 单卡片 DOM：Header（折叠/标题/字数/Pin/复制/移除）+ Body（按密度渲染）。 */
 export class CardView {
+  private static instances = new WeakMap<HTMLElement, CardView>();
   readonly el: HTMLElement;
   private bodyEl: HTMLElement;
   private metaEl: HTMLElement;
@@ -49,6 +53,7 @@ export class CardView {
     const { card, collapsed, pinned } = opts;
     this.el = createDiv({ cls: "slipstream-card" });
     this.el.setAttribute("data-path", card.path);
+    CardView.instances.set(this.el, this);
     if (pinned) this.el.addClass("is-pinned");
     if (collapsed) this.el.addClass("is-collapsed");
 
@@ -140,7 +145,10 @@ export class CardView {
       const lines = source.split("\n");
       this.snapshot = this.opts.plugin.blockIds.capture(this.opts.card.file, source, this.opts.card.title);
       this.actions = new CitationActions(this.opts.plugin, this.snapshot, this.bodyEl, this.controlsEl,
-        () => this.opts.host.getTarget(), () => { this.opts.host.reselectSource(this.opts.card); }, this.opts.host.getCitationFeedback());
+        () => this.opts.host.getTarget(), () => { this.opts.host.reselectSource(this.opts.card); }, this.opts.host.getCitationFeedback(),
+        this.opts.host.collectToOutline
+          ? (snapshot, fragment) => this.opts.host.collectToOutline!(snapshot, fragment)
+          : undefined);
       if (this.opts.density === "snippet") {
         this.renderSnippet(source);
       } else {
@@ -179,10 +187,35 @@ export class CardView {
 
   destroy(): void {
     this.disposed = true; this.generation++; this.renderPromise = undefined;
+    CardView.instances.delete(this.el);
     this.actions?.destroy();
     this.component?.unload();
     this.component = undefined;
     this.el.empty();
+  }
+
+  static activeCaptureIn(container: HTMLElement): { snapshot: SourceSnapshot; fragment: CapturedFragment } | undefined {
+    const selection = container.ownerDocument.getSelection();
+    if (selection && !selection.isCollapsed && selection.rangeCount) {
+      const range = selection.getRangeAt(0);
+      if (range.intersectsNode(container)) {
+        const cards = Array.from(container.querySelectorAll<HTMLElement>(".slipstream-card"));
+        const touched = cards.filter((cardEl) => range.intersectsNode(cardEl));
+        if (touched.length !== 1) throw new CitationError("SOURCE_MAPPING_UNSUPPORTED");
+        const view = CardView.instances.get(touched[0]);
+        if (!view || !view.snapshot || !view.actions) throw new CitationError("SOURCE_MAPPING_UNSUPPORTED");
+        const fragment = view.actions.activeFragment();
+        if (!fragment) throw new CitationError("SOURCE_MAPPING_UNSUPPORTED");
+        return { snapshot: view.snapshot, fragment };
+      }
+    }
+    for (const cardEl of Array.from(container.querySelectorAll<HTMLElement>(".slipstream-card"))) {
+      const view = CardView.instances.get(cardEl);
+      if (!view || !view.snapshot || !view.actions) continue;
+      const fragment = view.actions.activeFragment();
+      if (fragment) return { snapshot: view.snapshot, fragment };
+    }
+    return undefined;
   }
 
   private async renderFull(source: string, lines: string[], generation: number): Promise<void> {
@@ -259,7 +292,7 @@ export class CardView {
     const content = wrapper.createDiv({ cls: `${cls} slipstream-citation-content`, text: snippet.displayText });
     const origin = this.snapshot!.spans.find((span) => span.blockKey === snippet.origin.blockKey)!;
     const key = `${snippet.id.split(":")[0]}:${(snippet.projection[0] ?? snippet.origin.rawRange.from) - snippet.origin.rawRange.from}`;
-    this.actions!.addUnit(content, { origin, content: snippet.displayText, mode: "fragment", key });
+    this.actions!.addUnit(content, { origin, content: snippet.displayText, mode: "fragment", key, projection: snippet.projection });
     this.elements.push(content);
     if (snippet.truncated) wrapper.createSpan({ cls: "slipstream-truncation", text: "…", attr: { "data-no-cite": "true", "aria-hidden": "true" } });
   }

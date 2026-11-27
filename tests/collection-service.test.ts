@@ -88,4 +88,51 @@ describe("CollectionService", () => {
     expect(deriveVisible(items, state).map((item) => item.path)).toEqual(["a/three.md"]);
     expect(stableSort(items, { ...base, sort: "mtime", sortAsc: false }).map((item) => item.path)).toEqual(["a/three.md", "a/two.md", "a/one.md"]);
   });
+
+  it("narrows with instanceof TFile and diagnoses folders, non-markdown, missing paths, and bad link anchors", async () => {
+    const png = new TFile("Assets/pic.png");
+    const note = new TFile("Notes/A.md");
+    const folder = new TFolder();
+    const fakeFileLike = { path: "Notes/Fake.md", extension: "md" };
+    const gateway = {
+      getMarkdownFiles: () => [note],
+      getFileCache: () => ({ tags: [], headings: [], blocks: {}, links: [], embeds: [] }),
+      getResolvedLinks: () => ({}),
+      getAbstractFileByPath: (path: string) => {
+        if (path === "Notes/A.md") return note;
+        if (path === "Assets/pic.png") return png;
+        if (path === "Notes") return folder;
+        if (path === "Notes/Fake.md") return fakeFileLike;
+        return null;
+      },
+    };
+    const service = new CollectionService({
+      app: { vault: { getAbstractFileByPath: () => null } } as never,
+      gateway: gateway as never,
+      fileRef: (file) => `ref:${file.path}`,
+      globalExcludeGlobs: () => [],
+    });
+
+    const snapshot = await service.resolve({
+      rules: [
+        { id: "bad-folder-anchor", spec: { kind: "backlinks", value: "Notes", anchorFile: "Notes" } },
+        { id: "bad-png-anchor", spec: { kind: "outlinks", value: "Assets/pic.png", anchorFile: "Assets/pic.png" } },
+        { id: "bad-fake-anchor", spec: { kind: "backlinks", value: "Notes/Fake.md", anchorFile: "Notes/Fake.md" } },
+        { id: "ok-anchor", spec: { kind: "outlinks", value: "Notes/A.md", anchorFile: "Notes/A.md" } },
+      ],
+      manualPaths: ["Notes/A.md", "Notes", "Assets/pic.png", "Notes/Fake.md", "Notes/Missing.md"],
+    }, 2);
+
+    expect(snapshot.items.map((item) => item.path)).toEqual(["Notes/A.md"]);
+    expect(snapshot.completeness).toBe("partial");
+    expect(snapshot.issues).toEqual(expect.arrayContaining([
+      { category: "RULE_MISSING", path: "Notes", ruleId: "bad-folder-anchor" },
+      { category: "RULE_MISSING", path: "Assets/pic.png", ruleId: "bad-png-anchor" },
+      { category: "RULE_MISSING", path: "Notes/Fake.md", ruleId: "bad-fake-anchor" },
+      { category: "FILE_MISSING", path: "Notes" },
+      { category: "FILE_MISSING", path: "Assets/pic.png" },
+      { category: "FILE_MISSING", path: "Notes/Fake.md" },
+      { category: "FILE_MISSING", path: "Notes/Missing.md" },
+    ]));
+  });
 });

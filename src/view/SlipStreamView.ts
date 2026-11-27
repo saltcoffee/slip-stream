@@ -58,6 +58,10 @@ export class SlipStreamView extends ItemView {
   openDeskSelector(): void { this.controller?.openDeskSelector(); }
   focusSearchInput(): void { this.controller?.focusSearchInput(); }
   moveFocus(delta: number): void { this.controller?.move(delta); }
+  openOutline(): void { this.controller?.openOutline(); }
+  collectActiveToOutline(): void { void this.controller?.collectActiveToOutline(); }
+  openNewOutlineGroup(): void { this.controller?.openNewOutlineGroup(); }
+  previewOutline(): void { this.controller?.previewOutline({ kind: "all" }); }
 
   refreshFromExternal(): void {
     this.controller?.refreshSilent();

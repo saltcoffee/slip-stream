@@ -1,8 +1,21 @@
 import type { PluginDataStore, SaveReceipt } from "../infra/PluginDataStore";
 import type { Desk, DeskReadingState, DeskRule, ReadingAnchor, UnresolvedRef } from "./deskTypes";
 import { cloneDesk, createDesk, createDeskRule, isValidDeskName, normalizeDeskName, ruleSignature } from "./deskTypes";
+import type { EvidenceOutline } from "./outlineTypes";
 
 export type DeskEditResult = "ok" | "duplicateName" | "invalidName" | "missing";
+
+export interface OutlineMutationOutcome {
+  status: "ok" | "missing" | "stale" | "readonly";
+  saved: boolean;
+  revision: number;
+}
+
+function mapPath(path: string, oldPath: string, newPath: string, isFolder: boolean): string {
+  if (path === oldPath) return newPath;
+  if (isFolder && path.startsWith(oldPath + "/")) return newPath + path.slice(oldPath.length);
+  return path;
+}
 
 /**
  * 书桌配置的唯一修改入口。所有改动经 PluginDataStore 串行落盘，
@@ -13,6 +26,8 @@ export class DeskService {
   private dirtyRevision = new Map<string, number>();
   /** 每张书桌的生命周期代际；删除后旧回调不得复活。 */
   private lifecycle = new Map<string, number>();
+  /** 每张书桌提纲的运行期修订号；任何提纲修改递增。 */
+  private outlineRevisions = new Map<string, number>();
 
   constructor(private store: PluginDataStore) {}
 
@@ -28,6 +43,7 @@ export class DeskService {
   }
 
   generation(id: string): number { return this.lifecycle.get(id) ?? 0; }
+  outlineRevision(id: string): number { return this.outlineRevisions.get(id) ?? 0; }
   exists(id: string): boolean { return this.store.data.desks.some((desk) => desk.id === id); }
   isDirty(id: string): boolean { return this.store.persistedRevision < (this.dirtyRevision.get(id) ?? 0); }
 
@@ -71,7 +87,7 @@ export class DeskService {
     if (!this.exists(id)) return { saved: false };
     try {
       const receipt = await this.store.save();
-      if (this.store.isPersisted(this.dirtyRevision.get(id) ?? 0)) this.dirtyRevision.delete(id);
+      this.markPersisted(id);
       return { saved: true, receipt };
     } catch {
       return { saved: false };
@@ -95,6 +111,38 @@ export class DeskService {
     this.touch(id);
     if (!persist) return true;
     try { await this.store.save(); this.markPersisted(id); return true; } catch { return false; }
+  }
+
+  /** 定向修改某张书桌的私有提纲：校验只读、书桌存在与预期修订号，经唯一根保存落盘。 */
+  async mutateOutline(
+    id: string,
+    expectedRevision: number,
+    change: (outline: EvidenceOutline, desk: Desk) => boolean | void,
+    persist = true,
+  ): Promise<OutlineMutationOutcome> {
+    if (this.store.readOnly) return { status: "readonly", saved: false, revision: this.outlineRevision(id) };
+    const desk = this.get(id);
+    if (!desk) return { status: "missing", saved: false, revision: this.outlineRevision(id) };
+    const currentRevision = this.outlineRevision(id);
+    if (currentRevision !== expectedRevision) {
+      return { status: "stale", saved: false, revision: currentRevision };
+    }
+    const applied = change(desk.outline, desk);
+    if (applied === false) {
+      return { status: "ok", saved: !this.isDirty(id), revision: currentRevision };
+    }
+    const nextRevision = currentRevision + 1;
+    this.outlineRevisions.set(id, nextRevision);
+    desk.updatedAt = Date.now();
+    this.touch(id);
+    if (!persist) return { status: "ok", saved: false, revision: nextRevision };
+    try {
+      await this.store.save();
+      this.markPersisted(id);
+      return { status: "ok", saved: true, revision: nextRevision };
+    } catch {
+      return { status: "ok", saved: false, revision: nextRevision };
+    }
   }
 
   /** 只改内存、由调用方在合适时机保存（例如阅读状态节流保存）。 */
@@ -182,6 +230,7 @@ export class DeskService {
     this.store.data.desks.splice(index, 1);
     this.lifecycle.set(id, this.generation(id) + 1);
     this.dirtyRevision.delete(id);
+    this.outlineRevisions.delete(id);
     this.store.touch();
     try { await this.store.save(); } catch { /* 删除失败仍会保留在内存之外，下次保存重试 */ }
   }
@@ -191,30 +240,27 @@ export class DeskService {
     return desk ? cloneDesk(desk) : undefined;
   }
 
-  /** 真实改名事件：按精确路径或目录前缀边界更新全部相关路径。 */
+  /** 真实改名事件：按精确路径或目录前缀边界更新全部相关路径与提纲来源/目标提示。 */
   async renamePaths(oldPath: string, newPath: string, isFolder: boolean): Promise<void> {
-    const map = (path: string): string => {
-      if (path === oldPath) return newPath;
-      if (isFolder && path.startsWith(oldPath + "/")) return newPath + path.slice(oldPath.length);
-      return path;
-    };
-    let changed = false;
-    const mapArray = (values: string[]): string[] => {
-      const mapped = values.map(map);
-      if (mapped.some((value, index) => value !== values[index])) changed = true;
-      return mapped;
-    };
+    let anyChanged = false;
     for (const desk of this.store.data.desks) {
-      const target = map(desk.targetPath);
-      if (target !== desk.targetPath) { desk.targetPath = target; changed = true; }
+      let deskChanged = false;
+      let outlineChanged = false;
+      const mapArray = (values: string[]): string[] => {
+        const mapped = values.map((v) => mapPath(v, oldPath, newPath, isFolder));
+        if (mapped.some((value, index) => value !== values[index])) deskChanged = true;
+        return mapped;
+      };
+      const target = mapPath(desk.targetPath, oldPath, newPath, isFolder);
+      if (target !== desk.targetPath) { desk.targetPath = target; deskChanged = true; }
       for (const rule of desk.rules) {
         if (rule.spec.kind === "folder" || rule.spec.kind === "backlinks" || rule.spec.kind === "outlinks") {
-          const value = map(rule.spec.value);
-          if (value !== rule.spec.value) { rule.spec.value = value; changed = true; }
+          const value = mapPath(rule.spec.value, oldPath, newPath, isFolder);
+          if (value !== rule.spec.value) { rule.spec.value = value; deskChanged = true; }
         }
         if (rule.spec.anchorFile) {
-          const anchor = map(rule.spec.anchorFile);
-          if (anchor !== rule.spec.anchorFile) { rule.spec.anchorFile = anchor; changed = true; }
+          const anchor = mapPath(rule.spec.anchorFile, oldPath, newPath, isFolder);
+          if (anchor !== rule.spec.anchorFile) { rule.spec.anchorFile = anchor; deskChanged = true; }
         }
       }
       desk.manualPaths = mapArray(desk.manualPaths);
@@ -224,19 +270,72 @@ export class DeskService {
       desk.reading.dismissed = mapArray(desk.reading.dismissed);
       desk.reading.customOrder = mapArray(desk.reading.customOrder);
       if (desk.anchor) {
-        const filePath = map(desk.anchor.filePath);
-        if (filePath !== desk.anchor.filePath) { desk.anchor.filePath = filePath; changed = true; }
+        const filePath = mapPath(desk.anchor.filePath, oldPath, newPath, isFolder);
+        if (filePath !== desk.anchor.filePath) { desk.anchor.filePath = filePath; deskChanged = true; }
         desk.anchor.neighborPaths = mapArray(desk.anchor.neighborPaths);
       }
       for (const ref of desk.unresolvedRefs) {
-        const path = map(ref.path);
-        if (path !== ref.path) { ref.path = path; changed = true; }
+        const path = mapPath(ref.path, oldPath, newPath, isFolder);
+        if (path !== ref.path) { ref.path = path; deskChanged = true; }
       }
-      if (changed) desk.updatedAt = Date.now();
+      for (const entry of desk.outline.entries) {
+        const srcPath = mapPath(entry.snapshot.source.path, oldPath, newPath, isFolder);
+        if (srcPath !== entry.snapshot.source.path) {
+          entry.snapshot.source.path = srcPath;
+          deskChanged = true;
+          outlineChanged = true;
+        }
+        if (entry.lastInsertion) {
+          const insTarget = mapPath(entry.lastInsertion.targetPath, oldPath, newPath, isFolder);
+          if (insTarget !== entry.lastInsertion.targetPath) {
+            entry.lastInsertion.targetPath = insTarget;
+            deskChanged = true;
+            outlineChanged = true;
+          }
+        }
+      }
+      if (outlineChanged) {
+        this.outlineRevisions.set(desk.id, this.outlineRevision(desk.id) + 1);
+      }
+      if (deskChanged) {
+        desk.updatedAt = Date.now();
+        this.touch(desk.id);
+        anyChanged = true;
+      }
     }
-    if (changed) {
-      this.store.touch();
-      try { await this.store.save(); } catch { /* 保存失败保留内存修改 */ }
+    if (anyChanged) {
+      try {
+        await this.store.save();
+        for (const desk of this.store.data.desks) this.markPersisted(desk.id);
+      } catch { /* 保存失败保留内存修改 */ }
+    }
+  }
+
+  /** 观察到来源删除后标记 identity=unconfirmed-after-loss；同路径 create 不自动解除。 */
+  async markSourceDeleted(deletedPath: string, isFolder = false): Promise<void> {
+    let anyChanged = false;
+    for (const desk of this.store.data.desks) {
+      let outlineChanged = false;
+      for (const entry of desk.outline.entries) {
+        const src = entry.snapshot.source;
+        const matches = src.path === deletedPath || (isFolder && src.path.startsWith(deletedPath + "/"));
+        if (matches && src.identity !== "unconfirmed-after-loss") {
+          src.identity = "unconfirmed-after-loss";
+          outlineChanged = true;
+        }
+      }
+      if (outlineChanged) {
+        this.outlineRevisions.set(desk.id, this.outlineRevision(desk.id) + 1);
+        desk.updatedAt = Date.now();
+        this.touch(desk.id);
+        anyChanged = true;
+      }
+    }
+    if (anyChanged) {
+      try {
+        await this.store.save();
+        for (const desk of this.store.data.desks) this.markPersisted(desk.id);
+      } catch { /* 保存失败保留内存修改 */ }
     }
   }
 }

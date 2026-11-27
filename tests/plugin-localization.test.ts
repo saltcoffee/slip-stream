@@ -24,9 +24,11 @@ describe("runtime localization", () => {
     expect(commands.get("set-citation-target")?.name).toBe("Set current note as citation target");
     setLanguage("zh"); plugin.relocalizeViews();
     expect(commands.get("set-citation-target")?.name).toBe("将当前笔记设为引用目标");
-    expect(commands.size).toBe(11);
+    expect(commands.get("open-outline")?.name).toBe("打开当前书桌提纲");
+    expect(commands.size).toBe(15);
     setLanguage("en"); plugin.relocalizeViews();
     expect(commands.get("set-citation-target")?.name).toBe("Set current note as citation target");
+    expect(commands.get("open-outline")?.name).toBe("Open current desk outline");
   });
   it.each(["en", "zh"] as const)("renders action, precision and timestamps in %s", (language) => {
     setLanguage(language);
@@ -58,6 +60,70 @@ describe("runtime localization", () => {
     await tab.setControlValue("language", "en");
     expect(tab.getSettingDefinitions().some((setting) => setting.name === "Citation snapshots")).toBe(true);
     expect(plugin.relocalizeViews).toHaveBeenCalledTimes(2);
+  });
+  it("refreshes the focused language row and its options on every language change", async () => {
+    const plugin = { settings: { ...DEFAULT_SETTINGS }, persist: vi.fn(async () => {}), relocalizeViews: vi.fn() };
+    const tab = new SlipStreamSettingsTab({} as never, plugin as never);
+    const rows = [document.createElement("div"), document.createElement("div")];
+    document.body.append(...rows);
+    let pendingChange: Promise<unknown>;
+    tab.update = () => {
+      tab.getSettingDefinitions().slice(0, 2).forEach((definition, index) => {
+        const row = rows[index];
+        // Obsidian 1.15.1 reuses a focused control definition without repainting the row.
+        if (definition.control && row.contains(document.activeElement)) return;
+        row.replaceChildren();
+        row.createDiv({ cls: "setting-item-name", text: definition.name });
+        const setting = {
+          addDropdown(configure: (dropdown: unknown) => void) {
+            const select = document.createElement("select");
+            row.appendChild(select);
+            const dropdown = {
+              addOptions(options: Record<string, string>) {
+                for (const [value, label] of Object.entries(options)) select.add(new Option(label, value));
+                return this;
+              },
+              setValue(value: string) { select.value = value; return this; },
+              onChange(callback: (value: string) => Promise<void>) {
+                select.addEventListener("change", () => { pendingChange = callback(select.value); });
+                return this;
+              },
+            };
+            configure(dropdown);
+          },
+        };
+        if (definition.render) definition.render(setting as never, {} as never);
+        else if (definition.control?.type === "dropdown") {
+          const control = definition.control;
+          const select = document.createElement("select");
+          for (const [value, label] of Object.entries(control.options)) select.add(new Option(label, value));
+          select.value = String(tab.getControlValue(control.key));
+          select.addEventListener("change", () => { pendingChange = tab.setControlValue(control.key, select.value); });
+          row.appendChild(select);
+        }
+      });
+    };
+    setLanguage("zh");
+    tab.update();
+    for (const [value, languageLabel, densityLabel, autoLabel] of [
+      ["en", "Language", "Default density", "Follow Obsidian"],
+      ["zh", "界面语言", "默认显示密度", "跟随 Obsidian"],
+      ["auto", "Language", "Default density", "Follow Obsidian"],
+    ]) {
+      const select = rows[0].querySelector("select")!;
+      select.focus();
+      select.value = value;
+      select.dispatchEvent(new Event("change"));
+      await pendingChange!;
+      expect(rows[0].querySelector(".setting-item-name")?.textContent).toBe(languageLabel);
+      expect(rows[1].querySelector(".setting-item-name")?.textContent).toBe(densityLabel);
+      expect(rows[0].querySelector('option[value="auto"]')?.textContent).toBe(autoLabel);
+      expect(rows[0].querySelectorAll("select")).toHaveLength(1);
+      expect(rows[0].querySelector("select")?.value).toBe(value);
+      expect(plugin.settings.language).toBe(value);
+    }
+    expect(plugin.persist).toHaveBeenCalledTimes(3);
+    expect(plugin.relocalizeViews).toHaveBeenCalledTimes(3);
   });
   it("rejects invalid setting values without replacing a valid preference", async () => {
     const plugin = { settings: { ...DEFAULT_SETTINGS, historyLimit: 50 }, persist: vi.fn(async () => {}), relocalizeViews: vi.fn() };

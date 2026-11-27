@@ -18,15 +18,16 @@ export class SlipStreamSettingsTab extends PluginSettingTab {
       control,
     });
     return [
-      d("set.language", {
-        type: "dropdown",
-        key: "language",
-        options: {
-          auto: t("opt.followObsidian"),
-          zh: "中文",
-          en: "English",
+      {
+        name: t("set.language"),
+        // Control definitions retain the focused row on update(), including its old labels.
+        render: (setting) => {
+          setting.addDropdown((dropdown) => dropdown
+            .addOptions({ auto: t("opt.followObsidian"), zh: "中文", en: "English" })
+            .setValue(this.plugin.settings.language)
+            .onChange(async (value) => { await this.setControlValue("language", value); }));
         },
-      }),
+      },
       d("set.density", {
         type: "dropdown",
         key: "defaultDensity",
@@ -112,75 +113,6 @@ export class SlipStreamSettingsTab extends PluginSettingTab {
     if (key === "language") this.update();
   }
 
-  /** Imperative settings for Obsidian < 1.13 (declarative API not available). */
-  display(): void {
-    const { containerEl } = this;
-    containerEl.empty();
-
-    this.heading(containerEl, "set.general");
-    this.addLanguage(containerEl);
-    this.addDropdown(containerEl, "set.density", "defaultDensity", [
-      ["full", t("tb.full")],
-      ["snippet", t("tb.snippet")],
-      ["compact", t("tb.compact")],
-    ]);
-    this.addDropdown(containerEl, "set.placement", "defaultPlacement", [
-      ["right-sidebar", t("opt.right")],
-      ["split", t("opt.split")],
-    ]);
-
-    this.heading(containerEl, "set.sources");
-    this.addToggle(containerEl, "set.includeSub", "includeSubfolders");
-    this.addText(containerEl, "set.exclude", "excludeGlobs");
-    this.addNumber(containerEl, "set.pageSize", "collectionPageSize");
-
-    this.heading(containerEl, "set.card");
-    this.addNumber(containerEl, "set.excerpt", "excerptLength");
-    this.addToggle(containerEl, "set.includeHighlights", "snippetIncludeHighlights");
-    this.addToggle(containerEl, "set.includeCallouts", "snippetIncludeCallouts");
-    this.addNumber(containerEl, "set.calloutLimit", "snippetCalloutLimit");
-    this.addToggle(containerEl, "set.compactCollapsed", "compactDefaultCollapsed");
-
-    this.heading(containerEl, "set.citation");
-    this.addToggle(containerEl, "set.blockPrecision", "blockPrecision");
-    this.addDropdown(containerEl, "set.template", "defaultTemplate", [
-      ["A", t("template.A")],
-      ["B", t("template.B")],
-      ["C", t("template.C")],
-      ["D", t("template.D")],
-    ]);
-    this.addText(containerEl, "set.customTemplate", "customTemplate");
-    this.addToggle(containerEl, "set.dedupe", "dedupe");
-    this.addDropdown(containerEl, "set.selection", "selectionBehavior", [
-      ["replace", t("opt.replace")],
-      ["append", t("opt.append")],
-    ]);
-    this.addToggle(containerEl, "set.historyEnabled", "historyEnabled");
-    this.addNumber(containerEl, "set.historyLimit", "historyLimit");
-    this.snapshotControls(containerEl);
-
-    this.heading(containerEl, "set.performance");
-    this.addToggle(containerEl, "set.virtualScroll", "virtualScroll");
-    this.addNumber(containerEl, "set.concurrency", "renderConcurrency");
-    this.addDropdown(containerEl, "set.renderMode", "renderMode", [
-      ["block", t("opt.block")],
-      ["whole", t("opt.whole")],
-    ]);
-
-    this.heading(containerEl, "set.appearance");
-    this.addDropdown(containerEl, "set.cardWidth", "cardWidth", [
-      ["auto", t("opt.auto")],
-      ["narrow", t("opt.narrow")],
-      ["medium", t("opt.medium")],
-      ["wide", t("opt.wide")],
-    ]);
-    this.addSlider(containerEl, "set.fontScale", "fontScale");
-
-    this.heading(containerEl, "set.advanced");
-    this.addToggle(containerEl, "set.showDismissed", "showDismissed");
-    this.addToggle(containerEl, "set.debug", "debug");
-  }
-
   private description(key: string): string {
     const descriptions: Record<string, string> = { "set.blockPrecision": "set.anchorDesc", "set.dedupe": "set.dedupeDesc", "set.historyEnabled": "set.recordDesc", "set.pageSize": "set.pageSizeDesc" };
     return descriptions[key] ? t(descriptions[key]) : "";
@@ -217,18 +149,6 @@ export class SlipStreamSettingsTab extends PluginSettingTab {
     new Setting(el).setName(t(key)).setHeading();
   }
 
-  private addLanguage(el: HTMLElement): void {
-    new Setting(el).setName(t("set.language")).addDropdown((dd) => {
-      dd.addOption("auto", t("opt.followObsidian"));
-      dd.addOption("zh", "中文");
-      dd.addOption("en", "English");
-      dd.setValue(this.plugin.settings.language).onChange(async (value) => {
-        await this.setControlValue("language", value);
-        this.display();
-      });
-    });
-  }
-
   private addToggle(
     el: HTMLElement,
     nameKey: string,
@@ -256,31 +176,6 @@ export class SlipStreamSettingsTab extends PluginSettingTab {
       text.setValue(this.plugin.settings[key]).onChange(async (value) => {
         await this.setControlValue(key, value);
       })
-    );
-  }
-
-  private addNumber(
-    el: HTMLElement,
-    nameKey: string,
-    key: "collectionPageSize" | "excerptLength" | "snippetCalloutLimit" | "historyLimit" | "renderConcurrency"
-  ): void {
-    new Setting(el).setName(t(nameKey)).addText((text) => {
-      text.inputEl.type = "number";
-      text.setValue(String(this.plugin.settings[key])).onChange(async (value) => {
-        const n = Number(value);
-        await this.setControlValue(key, n);
-      });
-    });
-  }
-
-  private addSlider(el: HTMLElement, nameKey: string, key: "fontScale"): void {
-    new Setting(el).setName(t(nameKey)).addSlider((slider) =>
-      slider
-        .setLimits(0.8, 1.6, 0.1)
-        .setValue(this.plugin.settings[key])
-        .onChange(async (value) => {
-          await this.setControlValue(key, value);
-        })
     );
   }
 

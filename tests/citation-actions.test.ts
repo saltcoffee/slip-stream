@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { performCitation } from "../src/view/CitationActions";
-import { CitationError } from "../src/domain/citationTypes";
+import { CitationActions, performCitation } from "../src/view/CitationActions";
+import { canonicalSelectionKey, CitationError } from "../src/domain/citationTypes";
 import { setLanguage, t } from "../src/util/i18n";
 import { installObsidianDom } from "./support/dom";
 import { citationFixture } from "./support/citations";
@@ -50,5 +50,78 @@ describe("citation result feedback", () => {
       () => { throw new CitationError("TARGET_MISSING"); }, () => {});
     [...f.feedback.querySelectorAll("button")].find((button) => button.textContent === t("target.show"))!.click();
     expect(f.feedback.textContent).toBe(t("error.TARGET_MISSING"));
+  });
+
+  it("collects via Add to outline without calling CitationEngine.execute, clipboard, or BlockIdService.ensure", async () => {
+    setLanguage("en");
+    const f = fixture([]);
+    const snapshot = f.sources.capture(f.sourceFile as never, f.read());
+    const ensureSpy = vi.spyOn(f.sources, "ensure");
+    const copySpy = vi.spyOn(f.editors, "copy");
+    const body = document.createElement("div");
+    const p = body.createEl("p", { text: "Original paragraph" });
+    const controls = document.createElement("div");
+    const feedback = document.createElement("div");
+    document.body.append(body, controls, feedback);
+    const onCollect = vi.fn(async () => {});
+    const actions = new CitationActions(
+      { ...f.plugin, blockIds: f.sources, store: f.store, settings: f.store.data.settings } as never,
+      snapshot,
+      body,
+      controls,
+      () => undefined,
+      () => {},
+      feedback,
+      onCollect,
+    );
+    actions.addUnit(p, { origin: snapshot.spans[0], content: "Original paragraph", mode: "block", key: "paragraph" });
+    controls.querySelector<HTMLButtonElement>(".slipstream-paragraph-action")!.click();
+    const addBtn = [...controls.querySelectorAll<HTMLButtonElement>(".slipstream-citation-actions button")].find((b) => b.textContent === t("outline.addToOutline"))!;
+    expect(addBtn).toBeTruthy();
+    addBtn.click();
+    await vi.waitFor(() => expect(onCollect).toHaveBeenCalledOnce());
+    expect(f.execute).not.toHaveBeenCalled();
+    expect(ensureSpy).not.toHaveBeenCalled();
+    expect(copySpy).not.toHaveBeenCalled();
+    actions.destroy();
+  });
+
+  it("computes canonical selectionKey in addUnit and fragment with and without projection", () => {
+    setLanguage("en");
+    const f = fixture([]);
+    const snapshot = f.sources.capture(f.sourceFile as never, f.read());
+    const span = snapshot.spans[0];
+    const body = document.createElement("div");
+    const pProj = body.createEl("p", { text: "Projected" });
+    const pNoProj = body.createEl("p", { text: "Full" });
+    const controls = document.createElement("div");
+    const feedback = document.createElement("div");
+    document.body.append(body, controls, feedback);
+    const actions = new CitationActions(
+      { ...f.plugin, blockIds: f.sources, store: f.store, settings: f.store.data.settings } as never,
+      snapshot,
+      body,
+      controls,
+      () => undefined,
+      () => {},
+      feedback,
+    );
+    const projOffsets = [span.rawRange.from + 2, span.rawRange.from + 3, span.rawRange.from + 4];
+    actions.addUnit(pProj, { origin: span, content: "Projected", mode: "fragment", key: "proj-key", projection: projOffsets });
+    actions.addUnit(pNoProj, { origin: span, content: "Full", mode: "fragment", key: "noproj-key" });
+
+    const projFrag = actions.fragment(pProj)!;
+    expect(projFrag.selectedRanges).toEqual([{ from: span.rawRange.from + 2, to: span.rawRange.from + 5 }]);
+    expect(projFrag.selectionKey).toBe(canonicalSelectionKey([span], projFrag.selectedRanges));
+
+    const noProjFrag = actions.fragment(pNoProj)!;
+    expect(noProjFrag.selectedRanges).toEqual([{ from: span.rawRange.from, to: span.rawRange.from + "Original paragraph".length }]);
+    expect(noProjFrag.selectionKey).toBe(canonicalSelectionKey([span], noProjFrag.selectedRanges));
+
+    controls.querySelectorAll<HTMLButtonElement>(".slipstream-paragraph-action")[0].click();
+    expect(actions.activeFragment()?.selectionKey).toBe(projFrag.selectionKey);
+    controls.querySelectorAll<HTMLButtonElement>(".slipstream-paragraph-action")[1].click();
+    expect(actions.activeFragment()?.selectionKey).toBe(noProjFrag.selectionKey);
+    actions.destroy();
   });
 });
