@@ -4,6 +4,23 @@ All notable changes to SlipStream are documented in this file.
 
 ## [Unreleased]
 
+## [0.1.6] - 2026-11-27
+
+### Added
+
+- **Desk-private evidence outline & excerpt tray (16-01)**: collect complete blocks, focus fragments/callouts, or valid selections from cards and focus results into each desk's private outline with frozen snapshots (`origins`, `selectedRanges`, context hints), separate plain-text personal notes, duplicate confirmation, and explicit snapshot refresh without modifying source files or consuming citation dedupe.
+- **Thesis-grouped evidence organization (16-02)**: switch between Materials and Outline in the desk view; create, rename, and reorder single-layer groups; move and reorder entries across the collection zone and groups; keep empty groups as material-needed placeholders; return entries in order when deleting non-empty groups; and navigate via keyboard with windowed list rendering.
+- **Preflighted single-transaction batch insertion (16-03)**: preview and insert an entry, a group, or the full outline in one target transaction with read-only cancellable source verification (`verified`, `relocated`, `changed`, `unlocated`, `missing`, `unavailable`), duplicate and snapshot-capacity preflight, non-empty and Markdown/HTML structural boundary checks, same-source-as-target post-commit validation, suspend-to-editor target/source handoff, read-only multi-anchor planning before confirmed source ID writes, single-undo target commit, independent per-source batch records with monotonic commit sequences and save-only retry, and explicit saved-snapshot fallback when sources are unavailable.
+- **v3 plugin data schema & migration**: migrate v0/v1/v2 data directly to `schemaVersion: 3` (per-desk `outline` and `lastCommitSequence`) after a pre-migration backup, validate outline/sequence boundaries with read-only recovery, update outline paths on vault renames, and mark deleted sources as `unconfirmed-after-loss`.
+
+### Fixed
+
+- **Code audit & CSS lint fixes (16-04)**: removed redundant type assertions in `CardStreamController` and `FocusResults`, aligned async `Promise<void>` contracts in `FocusResultsHost` and `DeskSelectorHost` with error feedback, narrowed `CollectionService` file checks with `instanceof TFile`, switched `FocusSearch` yield timers to `window.setTimeout`/`window.clearTimeout`, removed the deprecated `SettingsTab.display()` fallback and `this.display()` refresh path, and removed `!important` from `.slipstream-root .is-hidden` using scoped selector specificity.
+
+### Notes
+
+- Optional P1 export (`16-P1-A`: export outline preview as plain Markdown) is deferred and not included in 0.1.6.
+
 ## [0.1.5] - 2026-11-17
 
 ### Added

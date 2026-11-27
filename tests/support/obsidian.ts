@@ -22,6 +22,12 @@ export class Component {
   unload(): void {}
 }
 
+export const MarkdownRenderer = {
+  async render(_app: unknown, markdown: string, container: HTMLElement, _sourcePath: string, _component: Component): Promise<void> {
+    container.textContent = markdown;
+  },
+};
+
 export class Notice {
   static messages: string[] = [];
   constructor(message: string) {

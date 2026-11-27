@@ -1,5 +1,9 @@
-import type { FocusRequest, FocusResult, SearchPhase, SearchRun } from "../domain/FocusSearch";
+import { Notice } from "obsidian";
+import { CitationError } from "../domain/citationTypes";
+import type { TextRange } from "../domain/citationTypes";
+import type { FocusResult, SearchPhase, SearchRun } from "../domain/FocusSearch";
 import { DRAG_SENTINEL, MIME_SLIPSTREAM } from "../constants";
+import { rangesFromOffsets } from "./CitationSelection";
 import { t } from "../util/i18n";
 
 export interface FocusCiteOptions {
@@ -8,19 +12,21 @@ export interface FocusCiteOptions {
   selectionInvalid?: boolean;
   /** 当前正在查看的命中位置（用于按处引用）。 */
   matchIndex?: number;
+  selectedRanges?: TextRange[];
 }
 
 export interface FocusResultsHost {
-  cite(result: FocusResult, action: "insert" | "copy", options?: FocusCiteOptions): void;
+  cite(result: FocusResult, action: "insert" | "copy", options?: FocusCiteOptions): Promise<void>;
+  collectToOutline?(result: FocusResult, options?: FocusCiteOptions): Promise<void>;
   drag(result: FocusResult, options?: FocusCiteOptions): string | undefined;
-  expandSection(result: FocusResult, container: HTMLElement, button: HTMLButtonElement): void;
+  expandSection(result: FocusResult, container: HTMLElement, button: HTMLButtonElement): Promise<void>;
   openSource(result: FocusResult): void;
   targetLabel(): string;
 }
 
 const GROUP_BATCH = 20;
 const SOURCE_PAGE = 20;
-type PreviewSelection = { element: HTMLElement; text: string } | { invalid: true };
+type PreviewSelection = { element: HTMLElement; text: string; start: number; end: number } | { invalid: true };
 
 /** 聚焦结果：按来源分组、组内分批、逐处命中导航、选区与整块引用。 */
 export class FocusResults {
@@ -68,7 +74,25 @@ export class FocusResults {
     if (selection.rangeCount !== 1 || !preview || !this.el.contains(preview) || !preview.contains(range.endContainer)
       || Array.from(preview.querySelectorAll(".slipstream-truncation")).some((el) => range.intersectsNode(el))) return { invalid: true };
     const text = selection.toString();
-    return text.trim() ? { element: preview, text } : undefined;
+    if (!text.trim()) return;
+    let offset = 0;
+    let start: number | undefined;
+    let end: number | undefined;
+    const walker = preview.ownerDocument.createTreeWalker(preview, NodeFilter.SHOW_TEXT);
+    let current: Node | null;
+    while ((current = walker.nextNode())) {
+      const value = current.textContent ?? "";
+      if (range.intersectsNode(current)) {
+        const s = range.startContainer === current ? range.startOffset : 0;
+        const e = range.endContainer === current ? range.endOffset : value.length;
+        if (e > s) {
+          if (start === undefined) start = offset + s;
+          end = offset + e;
+        }
+      }
+      offset += value.length;
+    }
+    return { element: preview, text, start: start ?? 0, end: end ?? text.length };
   }
 
   setRun(run: SearchRun, preserveMatches = false): void {
@@ -83,7 +107,7 @@ export class FocusResults {
     if (!results.length) this.sourceOffset = 0;
     const resolvedTotal = total ?? this.run?.total ?? results.length;
     this.run = {
-      request: this.run?.request ?? ({ sessionId: "", scopeRevision: 0, collectionGeneration: 0, query: "", kind: "all", includeHidden: false } as FocusRequest),
+      request: this.run?.request ?? { sessionId: "", scopeRevision: 0, collectionGeneration: 0, query: "", kind: "all", includeHidden: false },
       phase, total: resolvedTotal, scanned: this.run?.scanned ?? 0, failed: this.run?.failed ?? 0,
       results: [...results],
       progress: this.run?.progress ?? { total: resolvedTotal, scanned: 0, failed: 0, files: 0, units: results.length, keywords: 0, phase },
@@ -187,7 +211,7 @@ export class FocusResults {
     this.elements.set(result.key, item);
     const handle = item.createDiv({ cls: "slipstream-focus-drag", attr: { draggable: "true", "data-no-cite": "true", "aria-label": t("focus.drag") } });
     let dragSelection: FocusCiteOptions | undefined;
-    handle.addEventListener("pointerdown", () => { dragSelection = this.selectionWithin(previewEl); });
+    handle.addEventListener("pointerdown", () => { dragSelection = this.selectionWithin(previewEl, result); });
     handle.addEventListener("dragstart", (event: DragEvent) => {
       let token: string | undefined;
       try { token = this.host.drag(result, { ...dragSelection, matchIndex: this.matchCursor.get(result.key) ?? 0 }); } catch { token = undefined; }
@@ -207,40 +231,112 @@ export class FocusResults {
     const actions = item.createDiv({ cls: "slipstream-focus-actions" });
     let frozenSelection: FocusCiteOptions | undefined;
     const cite = actions.createEl("button", { cls: "slipstream-btn", text: t("focus.cite") });
-    cite.addEventListener("pointerdown", () => { frozenSelection = this.selectionWithin(previewEl); });
+    cite.addEventListener("pointerdown", () => { frozenSelection = this.selectionWithin(previewEl, result); });
     cite.addEventListener("keydown", (event) => {
-      if (event.key === "Enter" || event.key === " ") frozenSelection = this.selectionWithin(previewEl);
+      if (event.key === "Enter" || event.key === " ") frozenSelection = this.selectionWithin(previewEl, result);
     });
     cite.addEventListener("click", () => {
-      const selection = frozenSelection ?? this.selectionWithin(previewEl);
-      this.host.cite(result, "insert", { ...selection, matchIndex: this.matchCursor.get(result.key) ?? 0 });
+      const selection = frozenSelection ?? this.selectionWithin(previewEl, result);
+      const options = { ...selection, matchIndex: this.matchCursor.get(result.key) ?? 0 };
       frozenSelection = undefined;
+      this.runHostAction(() => this.host.cite(result, "insert", options), "state.error");
     });
-    actions.createEl("button", { cls: "slipstream-btn", text: t("focus.citeBlock") }).addEventListener("click", () => this.host.cite(result, "insert", { wholeBlock: true }));
+    actions.createEl("button", { cls: "slipstream-btn", text: t("focus.citeBlock") }).addEventListener("click", () => {
+      this.runHostAction(() => this.host.cite(result, "insert", { wholeBlock: true }), "state.error");
+    });
     const copy = actions.createEl("button", { cls: "slipstream-btn", text: t("focus.copy") });
-    copy.addEventListener("pointerdown", () => { frozenSelection = this.selectionWithin(previewEl); });
+    copy.addEventListener("pointerdown", () => { frozenSelection = this.selectionWithin(previewEl, result); });
     copy.addEventListener("keydown", (event) => {
-      if (event.key === "Enter" || event.key === " ") frozenSelection = this.selectionWithin(previewEl);
+      if (event.key === "Enter" || event.key === " ") frozenSelection = this.selectionWithin(previewEl, result);
     });
     copy.addEventListener("click", () => {
-      const selection = frozenSelection ?? this.selectionWithin(previewEl);
-      this.host.cite(result, "copy", { ...selection, matchIndex: this.matchCursor.get(result.key) ?? 0 });
+      const selection = frozenSelection ?? this.selectionWithin(previewEl, result);
+      const options = { ...selection, matchIndex: this.matchCursor.get(result.key) ?? 0 };
       frozenSelection = undefined;
+      this.runHostAction(() => this.host.cite(result, "copy", options), "state.error");
     });
     const expand = actions.createEl("button", { cls: "slipstream-btn", text: t("focus.expandSection") });
     expand.addEventListener("click", () => {
       if (!sectionEl.hasClass("is-hidden")) { sectionEl.addClass("is-hidden"); sectionEl.empty(); expand.setText(t("focus.expandSection")); return; }
       sectionEl.removeClass("is-hidden");
-      this.host.expandSection(result, sectionEl, expand);
+      this.runHostAction(() => this.host.expandSection(result, sectionEl, expand), "error.SOURCE_READ_FAILED", () => {
+        sectionEl.addClass("is-hidden");
+        sectionEl.empty();
+        expand.setText(t("focus.expandSection"));
+      });
     });
     actions.createEl("button", { cls: "slipstream-btn", text: t("focus.openNote") }).addEventListener("click", () => this.host.openSource(result));
+    const collectFn = this.host.collectToOutline;
+    if (collectFn) {
+      const addOutline = actions.createEl("button", { cls: "slipstream-btn", text: t("outline.addToOutline") });
+      addOutline.addEventListener("pointerdown", () => { frozenSelection = this.selectionWithin(previewEl, result); });
+      addOutline.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" || event.key === " ") frozenSelection = this.selectionWithin(previewEl, result);
+      });
+      addOutline.addEventListener("click", () => {
+        const selection = frozenSelection ?? this.selectionWithin(previewEl, result);
+        const options = { ...selection, matchIndex: this.matchCursor.get(result.key) ?? 0 };
+        frozenSelection = undefined;
+        this.runHostAction(() => collectFn.call(this.host, result, options), "state.error");
+      });
+    }
   }
 
-  private selectionWithin(previewEl: HTMLElement): FocusCiteOptions {
+  private runHostAction(action: () => Promise<void>, fallbackErrorKey: string, onError?: () => void): void {
+    try {
+      void Promise.resolve(action()).catch(() => {
+        onError?.();
+        new Notice(t(fallbackErrorKey));
+      });
+    } catch {
+      onError?.();
+      new Notice(t(fallbackErrorKey));
+    }
+  }
+
+  activeCapture(): { result: FocusResult; options: FocusCiteOptions } | undefined {
+    const selection = this.el.ownerDocument.getSelection();
+    if (selection && !selection.isCollapsed && selection.rangeCount) {
+      const range = selection.getRangeAt(0);
+      if (range.intersectsNode(this.el)) {
+        const captured = this.readSelection(selection);
+        if (captured && "invalid" in captured) throw new CitationError("SOURCE_MAPPING_UNSUPPORTED");
+        if (captured) {
+          const key = captured.element.closest<HTMLElement>(".slipstream-focus-result")?.getAttribute("data-focus-key");
+          const result = this.run?.results.find((entry) => entry.key === key);
+          if (result) {
+            return { result, options: { ...this.selectionWithin(captured.element, result), matchIndex: this.matchCursor.get(result.key) ?? 0 } };
+          }
+        }
+      }
+    }
+    if (this.lastSelection) {
+      if ("invalid" in this.lastSelection) throw new CitationError("SOURCE_MAPPING_UNSUPPORTED");
+      const key = this.lastSelection.element.closest<HTMLElement>(".slipstream-focus-result")?.getAttribute("data-focus-key");
+      const result = this.run?.results.find((entry) => entry.key === key);
+      if (result) {
+        return { result, options: { ...this.selectionWithin(this.lastSelection.element, result), matchIndex: this.matchCursor.get(result.key) ?? 0 } };
+      }
+    }
+    const activeEl = this.el.ownerDocument.activeElement;
+    const focusedResultEl = activeEl instanceof HTMLElement ? activeEl.closest<HTMLElement>(".slipstream-focus-result") : null;
+    const cursorEl = focusedResultEl ?? this.el.querySelector<HTMLElement>(".slipstream-focus-result.is-cursor");
+    const key = cursorEl?.getAttribute("data-focus-key");
+    const result = key ? this.run?.results.find((entry) => entry.key === key) : undefined;
+    if (!result) return undefined;
+    return { result, options: { matchIndex: this.matchCursor.get(result.key) ?? 0 } };
+  }
+
+  private selectionWithin(previewEl: HTMLElement, result?: FocusResult): FocusCiteOptions {
     const selection = previewEl.ownerDocument.getSelection();
     const captured = selection && !selection.isCollapsed && selection.rangeCount ? this.readSelection(selection) : this.lastSelection;
     if (captured && "invalid" in captured) return { selectionInvalid: true };
-    return captured?.element === previewEl ? { selection: captured.text } : {};
+    if (captured?.element !== previewEl) return {};
+    const preview = result ? (result.occurrences?.[this.matchCursor.get(result.key) ?? 0] ?? result.preview) : undefined;
+    const selectedRanges = preview && captured.end > captured.start
+      ? rangesFromOffsets(preview.sourceOffsets.slice(captured.start, captured.end))
+      : undefined;
+    return { selection: captured.text, ...(selectedRanges?.length ? { selectedRanges } : {}) };
   }
 
   private renderPreview(container: HTMLElement, result: FocusResult): void {

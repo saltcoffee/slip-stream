@@ -1,5 +1,7 @@
 import type { TFile } from "obsidian";
 import type { Density, SortKey, SourceSpec } from "./types";
+import type { EvidenceOutline } from "./outlineTypes";
+import { cloneOutline, emptyOutline } from "./outlineTypes";
 
 /** 0.1.5 书桌与完整集合的中立领域类型；除运行期 file 句柄外均为可序列化值。 */
 
@@ -65,10 +67,13 @@ export interface Desk {
   reading: DeskReadingState;
   anchor?: ReadingAnchor;
   unresolvedRefs: UnresolvedRef[];
+  outline: EvidenceOutline;
   createdAt: number;
   updatedAt: number;
   lastOpenedAt: number;
 }
+
+export type DeskV3 = Desk;
 
 export const MAX_DESK_NAME = 80;
 
@@ -116,6 +121,7 @@ export interface CreateDeskInput {
   rules?: DeskRule[];
   manualPaths?: string[];
   reading?: Partial<DeskReadingState>;
+  outline?: EvidenceOutline;
 }
 
 export function createDesk(input: CreateDeskInput, now = Date.now()): Desk {
@@ -127,6 +133,7 @@ export function createDesk(input: CreateDeskInput, now = Date.now()): Desk {
     manualPaths: input.manualPaths ? [...input.manualPaths] : [],
     reading: defaultReadingState(input.reading),
     unresolvedRefs: [],
+    outline: input.outline ? cloneOutline(input.outline) : emptyOutline(),
     createdAt: now,
     updatedAt: now,
     lastOpenedAt: now,
@@ -206,5 +213,6 @@ export function cloneDesk(desk: Desk): Desk {
     reading: cloneReadingState(desk.reading),
     anchor: desk.anchor ? { ...desk.anchor, blockHint: desk.anchor.blockHint ? { ...desk.anchor.blockHint } : undefined, neighborPaths: [...desk.anchor.neighborPaths] } : undefined,
     unresolvedRefs: desk.unresolvedRefs.map((ref) => ({ ...ref })),
+    outline: cloneOutline(desk.outline),
   };
 }

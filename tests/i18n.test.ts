@@ -37,13 +37,14 @@ describe("bilingual interface", () => {
   it("covers literal keys passed through helpers as well as direct translation calls", () => {
     const missing: string[] = [];
     for (const source of sources.filter((file) => file !== i18n)) visit(source, (node) => {
-      if (!ts.isStringLiteralLike(node) || !/^(?:cmd|citation|precision|anchor|target|history|data|error|common|menu|tb|sort|sb|card|state|status|notice|set|opt|template)\.[\w-]+$/.test(node.text)) return;
+      if (!ts.isStringLiteralLike(node) || !/^(?:cmd|citation|precision|anchor|target|history|data|error|common|menu|tb|sort|sb|card|state|status|notice|set|opt|template|outline|desk|focus|reading|src)\.[\w-]+$/.test(node.text)) return;
       if (!keys.has(node.text)) missing.push(`${source.fileName}:${node.text}`);
     });
     expect(missing).toEqual([]);
   });
-  it("covers all dynamic error, precision and history action labels from their domain types", () => {
+  it("covers all dynamic error, precision, outline error and history action labels from their domain types", () => {
     const source = sources.find((file) => file.fileName === "domain/citationTypes.ts")!;
+    const outlineSource = sources.find((file) => file.fileName === "domain/outlineTypes.ts")!;
     const checkUnion = (node: ts.Node, prefix: string) => visit(node, (member) => {
       if (ts.isLiteralTypeNode(member) && ts.isStringLiteral(member.literal)) expect(keys.has(prefix + member.literal.text), prefix + member.literal.text).toBe(true);
     });
@@ -54,6 +55,9 @@ describe("bilingual interface", () => {
         const action = node.members.find((member) => member.name?.getText(source) === "action");
         checkUnion(action!, "history.");
       }
+    });
+    visit(outlineSource, (node) => {
+      if (ts.isTypeAliasDeclaration(node) && node.name.text === "OutlineErrorCode") checkUnion(node.type, "error.");
     });
   });
   it("follows the host language in automatic mode while respecting a manual override", () => {

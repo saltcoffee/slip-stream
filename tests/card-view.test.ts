@@ -20,12 +20,13 @@ function fixture(source: string, density: "snippet" | "compact" | "full" = "snip
   const plugin = { settings: f.store.data.settings, store: f.store, app: f.app, editors: f.editors, blockIds: f.sources,
     renderService: { renderUnit }, logger: { error: vi.fn() }, cite: { execute }, dragTokens: new Map<string, (...args: any[]) => void>(), citationBusy: 0 };
   let binding: any;
+  const collectToOutline = vi.fn(async () => {});
   const view = new CardView({ plugin: plugin as never,
     card: { file: f.sourceFile, path: f.sourceFile.path, title: "Note", wordCount: 0 } as never,
     density, collapsed, pinned: false, host: { readSource, toggleCollapse() {}, togglePin() {}, dismiss() {},
-      getTarget: () => binding, getCitationFeedback: () => feedback, reselectSource() {} } });
+      getTarget: () => binding, getCitationFeedback: () => feedback, reselectSource() {}, collectToOutline } });
   document.body.append(view.el, feedback); views.push(view);
-  return { ...f, plugin, view, readSource, renderUnit, execute, feedback, setBinding: (value: any) => { binding = value; } };
+  return { ...f, plugin, view, readSource, renderUnit, execute, feedback, collectToOutline, setBinding: (value: any) => { binding = value; } };
 }
 function drag(f: ReturnType<typeof fixture>, selector: string, collapseBeforeDrag = false): CitationIntent | undefined {
   const block = f.view.el.querySelector(selector)!;
@@ -153,6 +154,33 @@ describe("CardView", () => {
     expect(f.execute).toHaveBeenCalledTimes(3);
     const signals = f.execute.mock.calls.map((call) => call[1].signal as AbortSignal);
     f.view.destroy(); expect(signals.every((signal) => signal.aborted)).toBe(true);
+  });
+
+  it("collects displayed snippet/selection via Add to outline without calling CitationEngine.execute or BlockIdService.ensure", async () => {
+    const f = fixture("# Heading\n\nFirst **bold** paragraph.");
+    await f.view.ensureRendered();
+    const ensureSpy = vi.spyOn(f.sources, "ensure");
+    const node = f.view.el.querySelector(".slipstream-excerpt")!.firstChild!;
+    const range = document.createRange();
+    range.setStart(node, 6);
+    range.setEnd(node, 10);
+    window.getSelection()!.addRange(range);
+    document.dispatchEvent(new Event("selectionchange"));
+
+    const addBtn = [...f.view.el.querySelectorAll<HTMLButtonElement>(".slipstream-citation-actions button")].find(
+      (b) => b.textContent === "Add to outline",
+    )!;
+    expect(addBtn).toBeTruthy();
+    addBtn.click();
+    await vi.waitFor(() => expect(f.collectToOutline).toHaveBeenCalledOnce());
+    expect(f.collectToOutline.mock.calls[0][1]).toMatchObject({
+      mode: "selection",
+      content: "bold",
+      selectedRanges: [{ from: 19, to: 23 }],
+    });
+    expect(f.execute).not.toHaveBeenCalled();
+    expect(ensureSpy).not.toHaveBeenCalled();
+    expect(CardView.activeCaptureIn(document.body)?.fragment.content).toBe("bold");
   });
 
 });

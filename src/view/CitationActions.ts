@@ -1,12 +1,27 @@
 import type SlipStreamPlugin from "../main";
 import type { CitationIntent, SourceSnapshot, TargetBinding, TargetTicket } from "../domain/citationTypes";
 import { canCreateBlockId } from "../domain/BlockReference";
-import { CitationError, localDate } from "../domain/citationTypes";
+import { canonicalSelectionKey, CitationError, localDate } from "../domain/citationTypes";
 import type { EngineOutcome, ExecutionOptions } from "../domain/CitationEngine";
-import { captureSelection } from "./CitationSelection";
+import { captureSelection, defaultOriginContentRange, rangesFromOffsets } from "./CitationSelection";
 import type { CapturedFragment, CitationUnit } from "./CitationSelection";
 import { citationPrompt } from "./CitationPrompt";
 import { t } from "../util/i18n";
+
+function unitFragment(unit: CitationUnit): CapturedFragment {
+  const spans = [unit.origin];
+  const selectedRanges = unit.projection?.length
+    ? rangesFromOffsets(unit.projection)
+    : [defaultOriginContentRange(unit.origin)];
+  const selectionKey = canonicalSelectionKey(spans, selectedRanges);
+  return {
+    spans,
+    content: unit.content,
+    mode: unit.mode,
+    ...(selectionKey ? { selectionKey } : {}),
+    selectedRanges,
+  };
+}
 
 export async function performCitation(plugin: SlipStreamPlugin, intent: CitationIntent, feedback: HTMLElement,
   ticket: TargetTicket | undefined, signal: AbortSignal, showTarget: () => void, refresh: () => void,
@@ -109,7 +124,8 @@ export class CitationActions {
   private selectionListener = () => this.selectionChanged();
   private escapeListener = (event: KeyboardEvent) => { if (event.key === "Escape") this.controllers.forEach((controller) => controller.abort()); };
   constructor(private plugin: SlipStreamPlugin, private snapshot: SourceSnapshot, private body: HTMLElement,
-    private controls: HTMLElement, private getTarget: () => TargetBinding | undefined, private refresh: () => void, feedback?: HTMLElement) {
+    private controls: HTMLElement, private getTarget: () => TargetBinding | undefined, private refresh: () => void, feedback?: HTMLElement,
+    private onCollect?: (snapshot: SourceSnapshot, fragment: CapturedFragment) => Promise<void>) {
     this.bar = controls.createDiv({ cls: "slipstream-citation-actions", attr: { "data-no-cite": "true" } });
     this.bar.hidden = true;
     this.feedback = feedback ?? controls.createDiv({ cls: "slipstream-citation-feedback", attr: { role: "status", "aria-live": "polite" } });
@@ -129,7 +145,7 @@ export class CitationActions {
     button.addEventListener("pointerdown", () => this.freezeSelection());
     button.addEventListener("click", () => {
       if (this.invalidSelection || this.emptySelection) return;
-      this.active = this.frozen ?? { spans: [unit.origin], content: unit.content, mode: unit.mode, selectionKey: unit.key };
+      this.active = this.frozen ?? unitFragment(unit);
       this.renderBar();
       this.bar.querySelector<HTMLButtonElement>("button")?.focus();
     });
@@ -147,12 +163,17 @@ export class CitationActions {
     if (!selection) { this.feedback.setText(t("citation.selectFirst")); return; }
     await this.submit(selection, "copy");
   }
+  activeFragment(): CapturedFragment | undefined {
+    this.freezeSelection();
+    if (this.invalidSelection) throw new CitationError("SOURCE_MAPPING_UNSUPPORTED");
+    return this.frozen ?? this.active;
+  }
   fragment(element: HTMLElement): CapturedFragment | undefined {
     this.freezeSelection();
     if (this.emptySelection) return;
     if (this.invalidSelection) throw new CitationError("SOURCE_MAPPING_UNSUPPORTED");
     const unit = this.units.get(element);
-    return this.frozen ?? (unit ? { spans: [unit.origin], content: unit.content, mode: unit.mode, selectionKey: unit.key } : undefined);
+    return this.frozen ?? (unit ? unitFragment(unit) : undefined);
   }
   intent(fragment: CapturedFragment, action: "copy" | "insert"): CitationIntent {
     return { ...fragment, operationId: crypto.randomUUID(), action, snapshot: this.snapshot,
@@ -186,6 +207,10 @@ export class CitationActions {
     const copy = this.bar.createEl("button", { cls: "slipstream-btn", text: t("card.copy") });
     insert.addEventListener("click", () => { if (this.active) void this.submit(this.active, "insert"); });
     copy.addEventListener("click", () => { if (this.active) void this.submit(this.active, "copy"); });
+    if (this.onCollect) {
+      const addOutline = this.bar.createEl("button", { cls: "slipstream-btn", text: t("outline.addToOutline") });
+      addOutline.addEventListener("click", () => { if (this.active) void this.collectActive(this.active); });
+    }
     const origin = this.active.spans[0];
     const precision = origin.existingBlockId || this.plugin.settings.blockPrecision && !this.plugin.store.readOnly && target?.fileRef !== this.snapshot.sourceRef && canCreateBlockId(origin.kind, origin.rawText)
       ? this.active.mode === "block" ? "block" : this.active.spans.length > 1 ? "multi-block-start" : "fragment"
@@ -196,6 +221,25 @@ export class CitationActions {
       const anchor = origin.existingBlockId ? `#^${origin.existingBlockId}` : origin.heading ? `#${origin.heading}` : "";
       void this.plugin.app.workspace.openLinkText(path + anchor, "", false);
     });
+  }
+  private async collectActive(fragment: CapturedFragment): Promise<void> {
+    if (this.busy || this.disposed || !this.onCollect) return;
+    this.setBusy(true);
+    const trigger = this.body.ownerDocument.activeElement as HTMLElement | null;
+    try {
+      await this.plugin.blockIds.inspect(this.snapshot, fragment.spans);
+      await this.onCollect(this.snapshot, fragment);
+    } catch (error) {
+      const code = error instanceof CitationError ? error.code : "CAPTURE_STALE";
+      this.feedback.empty();
+      this.feedback.createDiv({ text: t(`error.${code}`) });
+      if (code === "SOURCE_STALE" || code === "CAPTURE_STALE") {
+        this.feedback.createEl("button", { cls: "slipstream-btn", text: t("citation.refresh") }).addEventListener("click", () => this.refresh());
+      }
+    } finally {
+      this.setBusy(false);
+      if (!this.disposed && trigger?.isConnected) trigger.focus();
+    }
   }
   private async submit(fragment: CapturedFragment, action: "insert" | "copy"): Promise<void> {
     if (this.busy || this.disposed) return;

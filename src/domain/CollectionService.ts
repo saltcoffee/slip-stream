@@ -1,5 +1,5 @@
-import type { App, TFile } from "obsidian";
-import { TFolder } from "obsidian";
+import type { App } from "obsidian";
+import { TFile, TFolder } from "obsidian";
 import type { VaultGateway } from "../infra/VaultGateway";
 import type { CollectionIssue, CollectionItem, CollectionSnapshot, CollectionSource, DeskReadingState } from "./deskTypes";
 import { createResolver } from "./sources/SourceResolver";
@@ -74,7 +74,7 @@ export class CollectionService {
     let ruleFailed = false;
 
     const add = (file: TFile, ruleId?: string, manual = false): void => {
-      if (!(file instanceof Object) || !isMarkdown(file) || !legalPath(file.path)) return;
+      if (!(file instanceof TFile) || !isMarkdown(file) || !legalPath(file.path)) return;
       if (isExcluded(file.path, globals)) return;
       if (source.targetPath && file.path === source.targetPath && !manual) return;
       const entry = merged.get(file.path) ?? { file, ruleIds: new Set<string>(), manual: false };
@@ -91,9 +91,10 @@ export class CollectionService {
         issues.push({ category: "RULE_UNSUPPORTED", path: rule.spec.value, ruleId: rule.id }); ruleFailed = true; continue;
       }
       try {
-        const anchor = rule.spec.anchorFile ? this.deps.gateway.getAbstractFileByPath(rule.spec.anchorFile) as TFile | null ?? undefined : undefined;
+        const rawAnchor = rule.spec.anchorFile ? this.deps.gateway.getAbstractFileByPath(rule.spec.anchorFile) : undefined;
+        const anchor = rawAnchor instanceof TFile ? rawAnchor : undefined;
         const files = await resolver.resolve(rule.spec, {
-          app: this.deps.app, gateway: this.deps.gateway, anchorFile: anchor ?? undefined, excludeGlobs: globals,
+          app: this.deps.app, gateway: this.deps.gateway, anchorFile: anchor, excludeGlobs: globals,
         });
         for (const file of files) add(file, rule.id);
       } catch {
@@ -111,7 +112,7 @@ export class CollectionService {
         issues.push({ category: "FILE_MISSING", path: rawPath }); continue;
       }
       const file = this.deps.gateway.getAbstractFileByPath(rawPath);
-      if (file instanceof Object && isMarkdown(file as TFile)) add(file as TFile, undefined, true);
+      if (file instanceof TFile && isMarkdown(file)) add(file, undefined, true);
       else issues.push({ category: "FILE_MISSING", path: rawPath });
     }
 
@@ -148,7 +149,7 @@ export class CollectionService {
     const anchorPath = spec.anchorFile ?? spec.value;
     if (!anchorPath) return { category: "RULE_MISSING", path: spec.value };
     const anchor = this.deps.gateway.getAbstractFileByPath(anchorPath);
-    if (!(anchor instanceof Object) || !isMarkdown(anchor as TFile)) return { category: "RULE_MISSING", path: anchorPath };
+    if (!(anchor instanceof TFile) || !isMarkdown(anchor)) return { category: "RULE_MISSING", path: anchorPath };
     return undefined;
   }
 }

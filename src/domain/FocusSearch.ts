@@ -192,7 +192,21 @@ export class FocusSearch {
         onProgress(progress("running"), results);
         if (Date.now() - lastYield >= 8) {
           lastYield = Date.now();
-          await new Promise<void>((resolve) => setTimeout(resolve, 0));
+          await new Promise<void>((resolve) => {
+            const onAbort = (): void => {
+              window.clearTimeout(timer);
+              resolve();
+            };
+            const timer = window.setTimeout(() => {
+              signal.removeEventListener("abort", onAbort);
+              resolve();
+            }, 0);
+            if (signal.aborted) {
+              onAbort();
+            } else {
+              signal.addEventListener("abort", onAbort, { once: true });
+            }
+          });
         }
       }
     };

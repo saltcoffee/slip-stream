@@ -21,6 +21,8 @@ import { PluginDataStore } from "./infra/PluginDataStore";
 import { EditorGateway } from "./infra/EditorGateway";
 import { CitationLinkService } from "./infra/CitationLinkService";
 import { DeskService } from "./domain/DeskService";
+import { OutlineService } from "./domain/OutlineService";
+import { EvidenceResolver } from "./domain/EvidenceResolver";
 import { CollectionService } from "./domain/CollectionService";
 import { SearchDocumentReader } from "./infra/SearchDocumentReader";
 import { FocusSearch } from "./domain/FocusSearch";
@@ -41,12 +43,15 @@ export default class SlipStreamPlugin extends Plugin {
   cite!: CitationEngine;
   history!: CitationRecordsService;
   desks!: DeskService;
+  outline!: OutlineService;
+  evidence!: EvidenceResolver;
   collections!: CollectionService;
   searchReader!: SearchDocumentReader;
   focusSearch!: FocusSearch;
   logger!: Logger;
 
   citationBusy = 0;
+  templateRevision = 0;
   readonly dragTokens = new Map<string, (ticket?: TargetTicket, error?: CitationError) => void>();
 
   private refreshTimer: number | null = null;
@@ -63,11 +68,20 @@ export default class SlipStreamPlugin extends Plugin {
     this.searchReader = new SearchDocumentReader(this.editors);
     this.focusSearch = new FocusSearch(this.searchReader);
     this.desks = new DeskService(this.store);
+    this.outline = new OutlineService(this.desks, this.store);
     this.collections = new CollectionService({ app: this.app, gateway: this.gateway,
       fileRef: (file) => this.editors.fileRef(file),
       globalExcludeGlobs: () => this.settings.excludeGlobs.split(",").map((glob) => glob.trim()).filter(Boolean) });
     this.editors.onContentChanged((ref) => { this.searchReader.invalidate(ref); this.scheduleRefresh(); });
     this.blockIds = new BlockIdService(this.app, this.editors, () => this.scheduleRefresh());
+    this.evidence = new EvidenceResolver({
+      resolveRef: (path) => {
+        const abstract = this.app.vault.getAbstractFileByPath(path);
+        return abstract instanceof TFile && abstract.extension === "md" ? this.editors.fileRef(abstract) : undefined;
+      },
+      read: (fileRef, signal) => this.searchReader.read(fileRef, signal),
+      capture: (fileRef, text) => this.blockIds.capture(this.editors.file(fileRef), text),
+    });
     this.history = new CitationRecordsService(this.store);
     this.cite = new CitationEngine({ settings: () => this.settings,
       consentAccepted: () => this.store.blockIdConsentAccepted,
@@ -121,6 +135,7 @@ export default class SlipStreamPlugin extends Plugin {
   }
 
   async persist(): Promise<void> {
+    this.templateRevision++;
     this.history?.settingsChanged();
     for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_SLIPSTREAM)) (leaf.view as SlipStreamView).refreshCitationContext();
     await this.store.save();
@@ -222,6 +237,19 @@ export default class SlipStreamPlugin extends Plugin {
     linkCommand("open-outlinks", t("cmd.openOutlinks"), "outlinks");
 
     addCommand({ id: "history", name: t("cmd.history"), callback: () => this.openHistory() });
+    const runOnTargetView = (action: (view: SlipStreamView) => void, allowCreate = true) => {
+      const view = this.activeView();
+      if (view) { action(view); return; }
+      if (allowCreate && !this.app.workspace.getLeavesOfType(VIEW_TYPE_SLIPSTREAM).length) {
+        void this.ensureView().then((created) => { if (created) action(created); });
+        return;
+      }
+      new Notice(t("error.TARGET_DESK_AMBIGUOUS"));
+    };
+    addCommand({ id: "open-outline", name: t("cmd.openOutline"), callback: () => runOnTargetView((view) => view.openOutline()) });
+    addCommand({ id: "collect-to-outline", name: t("cmd.collectToOutline"), callback: () => runOnTargetView((view) => view.collectActiveToOutline(), false) });
+    addCommand({ id: "new-outline-group", name: t("cmd.newOutlineGroup"), callback: () => runOnTargetView((view) => view.openNewOutlineGroup()) });
+    addCommand({ id: "preview-outline", name: t("cmd.previewOutline"), callback: () => runOnTargetView((view) => view.previewOutline()) });
   }
 
   private registerMenus(): void {
@@ -276,6 +304,7 @@ export default class SlipStreamPlugin extends Plugin {
     }));
     this.registerEvent(this.app.vault.on("delete", (file) => {
       this.searchReader.invalidatePath(file.path);
+      void this.desks.markSourceDeleted(file.path, !(file instanceof TFile));
       this.scheduleRefresh();
     }));
     this.registerEvent(this.app.vault.on("rename", (file, oldPath) => {

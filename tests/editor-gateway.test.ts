@@ -3,7 +3,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { EditorState, EditorSelection, Transaction } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { history, undo, redo } from "@codemirror/commands";
-import { EditorGateway } from "../src/infra/EditorGateway";
+import { EditorGateway, mapBatchSliceReceipt } from "../src/infra/EditorGateway";
+import { buildOutlineLayout, compileCitationDocument } from "../src/domain/CitationDocument";
 import { MarkdownView, TFile, editorInfoField } from "./support/obsidian";
 import { MIME_SLIPSTREAM } from "../src/constants";
 
@@ -123,6 +124,41 @@ describe("EditorGateway", () => {
     const f = fixture(); const source = f.add("Source paragraph"); const ref = f.gateway.fileRef(source.file as never);
     vi.spyOn(source.cm, "dispatch").mockImplementationOnce(() => { throw new Error("Write failed"); });
     expect(() => f.gateway.writeSource(ref, "Source paragraph", { from: 16, to: 16 }, " ^id")).toThrow("ANCHOR_WRITE_FAILED");
+  });
+
+  it("maps batch contentRange and per-citation receipts across padding and single undo", () => {
+    const f = fixture("replace");
+    const target = f.add("Before target\nSelected\nAfter target");
+    target.cm.dispatch({ selection: { anchor: 14, head: 22 } });
+    const binding = f.gateway.bind(target.id);
+    const compiled = compileCitationDocument(
+      buildOutlineLayout({
+        scope: "group",
+        groups: [{ id: "g1", name: "Group" }],
+        items: [
+          { itemId: "i1", operationId: "b:i1", groupId: "g1", citationText: "> First\n> — [[A.md#^1]]", note: "Note 1" },
+          { itemId: "i2", operationId: "b:i2", groupId: "g1", citationText: "> Second\n> — [[B.md#^2]]" },
+        ],
+      }),
+    );
+
+    const receipt = f.gateway.commit(f.gateway.ticket(binding), compiled.markdown, true);
+    const fullDoc = target.editor.getValue();
+    expect(receipt.contentRange).toBeDefined();
+    expect(fullDoc.slice(receipt.contentRange!.from, receipt.contentRange!.to)).toBe(compiled.markdown);
+    expect(receipt.contentRange!.from).toBeGreaterThan(receipt.range.from);
+
+    const slice1 = mapBatchSliceReceipt(receipt, compiled.markdown, compiled.citationSlices[0].range);
+    const slice2 = mapBatchSliceReceipt(receipt, compiled.markdown, compiled.citationSlices[1].range);
+    expect(fullDoc.slice(slice1.range.from, slice1.range.to)).toBe("> First\n> — [[A.md#^1]]");
+    expect(slice1.text).toBe("> First\n> — [[A.md#^1]]");
+    expect(slice1.before).toContain("## Group");
+    expect(slice1.after).toContain("个人备注：Note 1");
+    expect(fullDoc.slice(slice2.range.from, slice2.range.to)).toBe("> Second\n> — [[B.md#^2]]");
+    expect(slice2.after).toContain("After target");
+
+    expect(undo(target.cm)).toBe(true);
+    expect(target.editor.getValue()).toBe("Before target\nSelected\nAfter target");
   });
 
 });

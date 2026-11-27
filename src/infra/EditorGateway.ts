@@ -1,10 +1,11 @@
-import { MarkdownView, editorInfoField } from "obsidian";
-import type { App, Editor, TFile } from "obsidian";
+import { MarkdownView, TFile, editorInfoField } from "obsidian";
+import type { App, Editor, EventRef } from "obsidian";
 import { Prec, Transaction } from "@codemirror/state";
 import type { Extension } from "@codemirror/state";
 import { EditorView, ViewPlugin } from "@codemirror/view";
 import type { ViewUpdate } from "@codemirror/view";
 import { isolateHistory } from "@codemirror/commands";
+import { computeTargetInsertion } from "../domain/CitationDocument";
 import { CitationError, validRange } from "../domain/citationTypes";
 import type { CommitReceipt, TargetBinding, TargetTicket, TextRange } from "../domain/citationTypes";
 import { MIME_SLIPSTREAM } from "../constants";
@@ -19,13 +20,40 @@ interface RegisteredEditor {
 }
 export interface TargetOption { editorId: string; fileRef: string; path: string; label: string }
 
-export function insertionPlan(text: string, range: TextRange, citation: string, block = true): { range: TextRange; text: string } {
-  if (!block) return { range, text: citation };
-  const before = text.slice(0, range.from);
-  const after = text.slice(range.to);
-  const prefix = before && !before.endsWith("\n\n") ? before.endsWith("\n") ? "\n" : "\n\n" : "";
-  const suffix = after && !after.startsWith("\n\n") ? after.startsWith("\n") ? "\n" : "\n\n" : "";
-  return { range, text: prefix + citation + suffix };
+export function insertionPlan(
+  text: string,
+  range: TextRange,
+  citation: string,
+  block = true,
+): { range: TextRange; text: string; prefixLength: number; suffixLength: number; contentRange: TextRange } {
+  return computeTargetInsertion(text, range, citation, block);
+}
+
+/** Maps a slice range inside an LF-normalized batch body to its exact target CommitReceipt. */
+export function mapBatchSliceReceipt(
+  receipt: CommitReceipt,
+  compiledMarkdown: string,
+  sliceRange: TextRange,
+): CommitReceipt {
+  const normalized = compiledMarkdown.replace(/\r\n/g, "\n");
+  let contentFrom: number;
+  if (receipt.contentRange) {
+    contentFrom = receipt.contentRange.from;
+  } else {
+    const idx = receipt.text.indexOf(normalized);
+    contentFrom = receipt.range.from + (idx >= 0 ? idx : 0);
+  }
+  const window = receipt.before + receipt.text + receipt.after;
+  const contentOffsetInWindow = receipt.before.length + (contentFrom - receipt.range.from);
+  const sliceStartInWindow = contentOffsetInWindow + sliceRange.from;
+  const sliceEndInWindow = contentOffsetInWindow + sliceRange.to;
+  return {
+    targetPath: receipt.targetPath,
+    range: { from: contentFrom + sliceRange.from, to: contentFrom + sliceRange.to },
+    text: window.slice(sliceStartInWindow, sliceEndInWindow),
+    before: window.slice(Math.max(0, sliceStartInWindow - 80), sliceStartInWindow),
+    after: window.slice(sliceEndInWindow, sliceEndInWindow + 80),
+  };
 }
 
 /** All editor access goes through public CM6 extensions and the registered Markdown view. */
@@ -55,6 +83,31 @@ export class EditorGateway {
   subscribe(listener: () => void): () => void { this.listeners.add(listener); return () => this.listeners.delete(listener); }
   /** 仅正文变化通知；选区／焦点不会触发，避免引用目标光标移动导致全文重查。 */
   onContentChanged(listener: (fileRef: string, path: string) => void): () => void { this.contentListeners.add(listener); return () => this.contentListeners.delete(listener); }
+  /** Watches a specific set of source fileRefs for editor buffer edits and vault modify/rename/delete events. */
+  watchSourceChanges(refs: ReadonlySet<string>, onChanged: (fileRef: string) => void): () => void {
+    const unsubs: Array<() => void> = [
+      this.onContentChanged((ref) => { if (refs.has(ref)) onChanged(ref); }),
+    ];
+    if (typeof this.app.vault.on === "function") {
+      const eventRefs: EventRef[] = [];
+      const notifyIfWatched = (file: unknown) => {
+        if (!(file instanceof TFile)) return;
+        const ref = this.ids.get(file);
+        if (ref && refs.has(ref)) onChanged(ref);
+      };
+      eventRefs.push(
+        this.app.vault.on("modify", notifyIfWatched),
+        this.app.vault.on("rename", notifyIfWatched),
+        this.app.vault.on("delete", notifyIfWatched),
+      );
+      unsubs.push(() => {
+        if (typeof this.app.vault.offref === "function") {
+          for (const eventRef of eventRefs) this.app.vault.offref(eventRef);
+        }
+      });
+    }
+    return () => { for (const unsub of unsubs) unsub(); };
+  }
   private notify(): void { this.listeners.forEach((listener) => listener()); }
 
   extension(): Extension {
@@ -174,8 +227,14 @@ export class EditorGateway {
       try { binding.ticket = this.capture(entry.id, binding.generation); } catch { binding.ticket = undefined; }
     }
     this.notify();
-    return { targetPath: entry.file.path, range: { from: plan.range.from, to: plan.range.from + plan.text.length }, text: plan.text,
-      before: ticket.baselineText.slice(Math.max(0, plan.range.from - 80), plan.range.from), after: ticket.baselineText.slice(plan.range.to, plan.range.to + 80) };
+    return {
+      targetPath: entry.file.path,
+      range: { from: plan.range.from, to: plan.range.from + plan.text.length },
+      contentRange: plan.contentRange,
+      text: plan.text,
+      before: ticket.baselineText.slice(Math.max(0, plan.range.from - 80), plan.range.from),
+      after: ticket.baselineText.slice(plan.range.to, plan.range.to + 80),
+    };
   }
   private dispatch(entry: RegisteredEditor, baseline: string, range: TextRange, text: string): void {
     const expected = baseline.slice(0, range.from) + text + baseline.slice(range.to);
@@ -191,6 +250,13 @@ export class EditorGateway {
   }
   async copy(text: string): Promise<void> {
     try { await navigator.clipboard.writeText(text); } catch { throw new CitationError("CLIPBOARD_DENIED"); }
+  }
+  readOpenSourceSync(ref: string): string | undefined {
+    const file = this.file(ref);
+    const views = this.app.workspace.getLeavesOfType("markdown").map((leaf) => leaf.view).filter((view): view is MarkdownView => view instanceof MarkdownView && view.file === file && view.getMode() === "source");
+    const buffers = views.map((view) => view.editor.getValue());
+    if (new Set(buffers).size > 1) throw new CitationError("SOURCE_AMBIGUOUS");
+    return buffers.length ? buffers[0] : undefined;
   }
   async readSource(ref: string): Promise<string> {
     const file = this.file(ref);

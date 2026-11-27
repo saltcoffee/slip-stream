@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+// @vitest-environment jsdom
+import { describe, expect, it, vi } from "vitest";
 import { TFile } from "./support/obsidian";
 import { SearchDocumentReader } from "../src/infra/SearchDocumentReader";
 import { FocusSearch } from "../src/domain/FocusSearch";
@@ -83,5 +84,52 @@ describe("FocusSearch", () => {
     expect(run.total).toBe(0);
     expect(run.phase).toBe("complete");
     expect(run.results).toHaveLength(0);
+  });
+
+  it("yields with window.setTimeout during long scans and clears timer on abort", async () => {
+    const bodies: Record<string, string> = {};
+    const items: CollectionItem[] = [];
+    for (let i = 0; i < 6; i++) {
+      const path = `n${i}.md`;
+      bodies[path] = "needle";
+      items.push(item(path));
+    }
+    const setTimeoutSpy = vi.spyOn(window, "setTimeout");
+    const clearTimeoutSpy = vi.spyOn(window, "clearTimeout");
+    const nowSpy = vi.spyOn(Date, "now");
+    let tick = 0;
+    nowSpy.mockImplementation(() => {
+      tick += 10;
+      return tick;
+    });
+    try {
+      const search = fixture(bodies);
+      const completed = await search.run(request(), items, new AbortController().signal, true, () => {});
+      expect(completed.phase).toBe("complete");
+      expect(completed.results).toHaveLength(6);
+      expect(setTimeoutSpy).toHaveBeenCalled();
+
+      const controller = new AbortController();
+      setTimeoutSpy.mockClear();
+      clearTimeoutSpy.mockClear();
+      let reads = 0;
+      const slowReader = {
+        read: async (ref: string) => {
+          reads++;
+          if (reads === 2) {
+            queueMicrotask(() => controller.abort());
+          }
+          return "needle";
+        },
+      };
+      const slowSearch = new FocusSearch(slowReader as never);
+      const abortedRun = await slowSearch.run(request(), items, controller.signal, true, () => {});
+      expect(abortedRun.phase).toBe("cancelled");
+      expect(clearTimeoutSpy).toHaveBeenCalled();
+    } finally {
+      nowSpy.mockRestore();
+      setTimeoutSpy.mockRestore();
+      clearTimeoutSpy.mockRestore();
+    }
   });
 });

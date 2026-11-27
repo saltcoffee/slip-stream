@@ -1,8 +1,11 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { FocusResults } from "../src/view/FocusResults";
+import type { FocusResultsHost } from "../src/view/FocusResults";
 import type { FocusResult, SearchRun } from "../src/domain/FocusSearch";
 import { installObsidianDom } from "./support/dom";
+import { Notice } from "./support/obsidian";
+import { t } from "../src/util/i18n";
 
 installObsidianDom();
 const views: FocusResults[] = [];
@@ -10,6 +13,7 @@ afterEach(() => {
   window.getSelection()?.removeAllRanges();
   for (const view of views) { view.destroy(); view.el.remove(); }
   views.length = 0;
+  Notice.messages.length = 0;
 });
 
 function preview(text: string) {
@@ -31,8 +35,15 @@ function run(results: FocusResult[]): SearchRun {
   };
 }
 
-function host() {
-  return { cite: vi.fn(), drag: vi.fn(() => "token"), expandSection: vi.fn(), openSource: vi.fn(), targetLabel: () => "" };
+function host(): FocusResultsHost {
+  return {
+    cite: vi.fn(async () => {}),
+    collectToOutline: vi.fn(async () => {}),
+    drag: vi.fn(() => "token"),
+    expandSection: vi.fn(async () => {}),
+    openSource: vi.fn(),
+    targetLabel: () => "",
+  };
 }
 
 function createView(h = host()) {
@@ -175,5 +186,52 @@ describe("FocusResults", () => {
     expect(view.el.querySelectorAll(".slipstream-focus-group")).toHaveLength(20);
     expect(view.el.querySelector('[data-focus-key="r499"]')).toBeTruthy();
     expect(view.el.querySelector('[data-focus-key="r0"]')).toBeNull();
+  });
+
+  it("publishes partial results without a prior run while preserving default request and progress", () => {
+    const view = createView();
+    view.setPartial([result("r0", 0)], "running", 3);
+    expect(view.hasResults()).toBe(true);
+    expect(view.results()).toHaveLength(1);
+    expect(view.el.querySelectorAll(".slipstream-focus-result")).toHaveLength(1);
+  });
+
+  it("handles rejected cite and expandSection promises with feedback and restores section state", async () => {
+    const h = host();
+    h.cite = vi.fn(async () => { throw new Error("cite failed"); });
+    h.expandSection = vi.fn(async () => { throw new Error("read failed"); });
+    const view = createView(h);
+    view.setRun(run([result("r0", 0)]));
+    const buttons = view.el.querySelectorAll<HTMLButtonElement>(".slipstream-focus-actions button");
+    buttons[0].click();
+    buttons[3].click();
+    await vi.waitFor(() => expect(Notice.messages).toEqual([t("state.error"), t("error.SOURCE_READ_FAILED")]));
+    const section = view.el.querySelector<HTMLElement>(".slipstream-focus-section")!;
+    expect(section.classList.contains("is-hidden")).toBe(true);
+    expect(buttons[3].textContent).toBe(t("focus.expandSection"));
+  });
+
+  it("collects selected preview text with exact sourceOffsets ranges and exposes activeCapture", () => {
+    const h = host();
+    const view = createView(h);
+    const r: FocusResult = {
+      ...result("r0", 0, [{ text: "needle here", sourceOffsets: [10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20], truncated: false }]),
+      matches: [{ from: 10, to: 16 }],
+    };
+    view.setRun(run([r]));
+    document.body.append(view.el);
+    select(view.el.querySelector("mark")!.firstChild!, 0, view.el.querySelector("mark")!.firstChild!, 6);
+
+    const active = view.activeCapture();
+    expect(active?.options).toMatchObject({ selection: "needle", selectedRanges: [{ from: 10, to: 16 }] });
+
+    const addBtn = [...view.el.querySelectorAll<HTMLButtonElement>(".slipstream-focus-actions button")].find(
+      (b) => b.textContent === t("outline.addToOutline"),
+    )!;
+    addBtn.click();
+    expect(h.collectToOutline).toHaveBeenCalledWith(
+      expect.objectContaining({ key: "r0" }),
+      expect.objectContaining({ selection: "needle", selectedRanges: [{ from: 10, to: 16 }] }),
+    );
   });
 });

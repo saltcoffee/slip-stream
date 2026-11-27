@@ -1,5 +1,5 @@
-import type { App, TFile } from "obsidian";
-import { getFrontMatterInfo, Notice } from "obsidian";
+import type { App } from "obsidian";
+import { getFrontMatterInfo, MarkdownRenderer, MarkdownView, Modal, Notice, TFile } from "obsidian";
 import type { CardModel } from "./CardModel";
 import { buildCardModel } from "./CardModel";
 import type { Density, SortKey } from "./types";
@@ -20,14 +20,26 @@ import type { FocusCiteOptions, FocusResultsHost } from "../view/FocusResults";
 import { ReadingPosition } from "../view/ReadingPosition";
 import { renderSectionPreview } from "../view/SectionPreview";
 import { chapterRange } from "./ChapterRange";
+import { CardView } from "../view/CardView";
 import type { CardHost } from "../view/CardView";
+import { buildEvidenceSnapshot, rangesFromOffsets } from "../view/CitationSelection";
+import type { CapturedFragment } from "../view/CitationSelection";
+import { citationPrompt } from "../view/CitationPrompt";
+import { OutlinePanel } from "../view/OutlinePanel";
+import type { OutlinePanelHost } from "../view/OutlinePanel";
+import { OutlineInsertModal } from "../view/OutlineInsertModal";
+import type { OutlinePreviewDraft } from "../view/OutlineInsertModal";
 import { renderEmpty, renderError, renderSkeleton } from "../view/states";
-import { CitationError, localDate } from "./citationTypes";
-import type { CitationIntent, TargetBinding } from "./citationTypes";
+import { canonicalSelectionKey, CitationError, localDate } from "./citationTypes";
+import type { CitationIntent, SourceSnapshot, TargetBinding, TargetTicket, TextRange } from "./citationTypes";
+import type { BatchCommitOutcome } from "./CitationEngine";
 import { performCitation } from "../view/CitationActions";
 import { visibleCharacters } from "./SnippetExtractor";
 import type { Desk, DeskReadingState, DeskRule, ReadingAnchor, CollectionItem, CollectionSnapshot, CollectionSource, UnresolvedRef } from "./deskTypes";
 import { defaultReadingState } from "./deskTypes";
+import type { EvidenceEntry, EvidenceOutline, EvidenceSnapshot, OutlineScope, SavedOrigin } from "./outlineTypes";
+import { sliceContextAfter, sliceContextBefore } from "./outlineTypes";
+import type { OutlineMutationResult } from "./OutlineService";
 import { applyHidden, deriveVisible, metadataFilter, stableSort } from "./CollectionService";
 import type { FocusKind, FocusProgress, FocusRequest, FocusResult, SearchRun } from "./FocusSearch";
 import { hashText } from "./FocusSearch";
@@ -80,13 +92,18 @@ function rulesFrom(raw: unknown): DeskRule[] {
   }).filter((rule): rule is DeskRule => !!rule);
 }
 
-/** 编排：书桌／临时会话 → 完整集合 → 普通阅读或聚焦。 */
-export class CardStreamController implements ToolbarHost, SourceBarHost, CardHost, DeskSelectorHost, FocusBarHost, FocusResultsHost {
+/** 编排：书桌／临时会话 → 完整集合 → 普通阅读／聚焦／提纲。 */
+export class CardStreamController implements ToolbarHost, SourceBarHost, CardHost, DeskSelectorHost, FocusBarHost, FocusResultsHost, OutlinePanelHost {
   private root!: HTMLElement;
+  private modeSwitchEl?: HTMLElement;
+  private materialsTabBtn?: HTMLButtonElement;
+  private outlineTabBtn?: HTMLButtonElement;
+  private draftBannerEl?: HTMLElement;
   private streamEl!: HTMLElement;
   private statusEl!: HTMLElement;
   private feedbackEl!: HTMLElement;
   private focusResultsEl!: HTMLElement;
+  private outlinePanel?: OutlinePanel;
   private stream!: CardStream;
   private toolbar?: Toolbar;
   private sourceBar?: SourceBar;
@@ -95,6 +112,16 @@ export class CardStreamController implements ToolbarHost, SourceBarHost, CardHos
   private focusBar?: FocusBar;
   private focusResults?: FocusResults;
   private readingPosition?: ReadingPosition;
+
+  private activeMode: "materials" | "outline" = "materials";
+  private previewDraft?: OutlinePreviewDraft;
+  private pendingCollectAfterCreate?: {
+    epoch: number;
+    entryId: string;
+    sourceSnapshot: SourceSnapshot;
+    spans: readonly import("./citationTypes").OriginSpan[];
+    evidenceSnapshot: EvidenceSnapshot;
+  };
 
   private deskId?: string;
   private temp: TempState = { rules: [], manualPaths: [], reading: defaultReadingState(), targetPath: "" };
@@ -170,6 +197,7 @@ export class CardStreamController implements ToolbarHost, SourceBarHost, CardHos
   async mount(root: HTMLElement): Promise<void> {
     if (this.focus) this.cancelFocus(false);
     this.focusResults?.destroy();
+    this.outlinePanel?.destroy();
     this.stream?.destroy();
     this.targetBar?.destroy();
     this.focusBar?.destroy();
@@ -179,6 +207,12 @@ export class CardStreamController implements ToolbarHost, SourceBarHost, CardHos
 
     this.deskSelector = new DeskSelector(this);
     root.appendChild(this.deskSelector.el);
+    this.modeSwitchEl = root.createDiv({ cls: "slipstream-mode-switch" });
+    this.materialsTabBtn = this.modeSwitchEl.createEl("button", { cls: "slipstream-btn", text: t("outline.tabMaterials") });
+    this.materialsTabBtn.addEventListener("click", () => this.setMode("materials"));
+    this.outlineTabBtn = this.modeSwitchEl.createEl("button", { cls: "slipstream-btn", text: t("outline.tabOutline") });
+    this.outlineTabBtn.addEventListener("click", () => this.setMode("outline"));
+    this.draftBannerEl = root.createDiv({ cls: "slipstream-outline-draft-banner is-hidden" });
     this.targetBar = new TargetBar(this.plugin.app, this.plugin.editors, () => this.binding,
       (editorId) => this.bindTarget(editorId), () => this.plugin.settings.blockPrecision && !this.plugin.store.readOnly,
       () => this.plugin.openCitationSettings(), () => this.currentTargetPath());
@@ -195,22 +229,30 @@ export class CardStreamController implements ToolbarHost, SourceBarHost, CardHos
     this.focusResultsEl = root.createDiv({ cls: "slipstream-focus-results-wrap is-hidden" });
     this.focusResults = new FocusResults(this);
     this.focusResultsEl.appendChild(this.focusResults.el);
+    this.outlinePanel = new OutlinePanel(this);
+    root.appendChild(this.outlinePanel.el);
     this.feedbackEl = root.createDiv({ cls: "slipstream-operation-feedback", attr: { role: "status", "aria-live": "polite" } });
     this.statusEl = root.createDiv({ cls: "slipstream-statusbar" });
     this.stream = new CardStream(this.plugin, this.streamEl, this, () => this.readingState().density,
       (path) => this.isCollapsed(path), (path) => this.readingState().pinned.includes(path));
     this.readingPosition = new ReadingPosition({ container: this.streamEl, ensureRendered: (path) => this.stream.ensureCardRendered(path) });
     this.streamEl.addEventListener("scroll", () => this.onScroll(), { passive: true });
+    this.applyModeVisibility();
+    this.updateModeSwitch();
+    this.renderDraftBanner();
     await this.refreshCollection();
   }
 
   destroy(): void {
     this.destroyed = true;
     this.dataGeneration++;
+    this.closeDraft();
+    this.pendingCollectAfterCreate = undefined;
     this.abortOperations();
     this.clearFocusPublish();
     this.readingPosition?.cancelRestore();
     this.cancelFocus(true);
+    this.outlinePanel?.destroy();
     this.focusResults?.destroy();
     this.targetBar?.destroy();
     if (this.binding) this.plugin.editors.release(this.binding);
@@ -222,6 +264,8 @@ export class CardStreamController implements ToolbarHost, SourceBarHost, CardHos
   /** 关闭前同步捕获最后阅读位置并尽力完成保存，不依赖异步卸载。 */
   async prepareClose(): Promise<void> {
     try {
+      this.closeDraft();
+      await this.outlinePanel?.flushPendingNotes();
       this.captureAnchor();
       if (this.deskId && this.plugin.desks.exists(this.deskId)) await this.plugin.desks.save(this.deskId);
     } catch { /* 关闭失败保留内存，不阻塞销毁 */ }
@@ -229,7 +273,14 @@ export class CardStreamController implements ToolbarHost, SourceBarHost, CardHos
 
   openCreateDeskForm(): void { this.deskSelector?.openForm(); }
   openDeskSelector(): void { this.deskSelector?.openList(); }
+  openOutline(): void { this.setMode("outline"); }
+  openNewOutlineGroup(): void {
+    this.setMode("outline");
+    this.outlinePanel?.openNewGroupDialog();
+  }
+  previewOutline(scope: OutlineScope): void { this.openPreview(scope); }
   focusSearchInput(): void {
+    if (this.activeMode === "outline") this.setMode("materials");
     if (!this.focus) this.enterFocus();
     this.focusBar?.focusInput();
   }
@@ -248,6 +299,10 @@ export class CardStreamController implements ToolbarHost, SourceBarHost, CardHos
   refreshSilent(): void {
     if (this.plugin.citationBusy > 0) { this.plugin.scheduleRefresh(); return; }
     // 外部分变化时重新解析完整集合；聚焦中由 refreshCollection 重新检索。
+    this.updateModeSwitch();
+    if (this.activeMode === "outline" && !this.outlinePanel?.hasPendingNotes()) {
+      this.outlinePanel?.render();
+    }
     void this.refreshCollection(true);
   }
 
@@ -380,12 +435,12 @@ export class CardStreamController implements ToolbarHost, SourceBarHost, CardHos
     }
     for (const issue of snapshot.issues) {
       if (!["FILE_MISSING", "RULE_MISSING", "RULE_INVALID", "RULE_UNSUPPORTED"].includes(issue.category)) continue;
-      const ref = {
+      const ref: UnresolvedRef = {
         path: issue.path,
-        kind: (issue.category === "FILE_MISSING" ? "file" : "folder") as "file" | "folder",
-        scope: (issue.ruleId ? "rule" : "manual") as "rule" | "manual",
+        kind: issue.category === "FILE_MISSING" ? "file" : "folder",
+        scope: issue.ruleId ? "rule" : "manual",
         ...(issue.ruleId ? { ruleId: issue.ruleId } : {}),
-        reason: "missing" as const,
+        reason: "missing",
       };
       if (!merged.has(refKey(ref))) merged.set(refKey(ref), ref);
     }
@@ -671,58 +726,151 @@ export class CardStreamController implements ToolbarHost, SourceBarHost, CardHos
     return token;
   }
 
-  private async performFocusCitation(result: FocusResult, action: "insert" | "copy", options: FocusCiteOptions,
-    ticket: import("./citationTypes").TargetTicket | undefined, showTarget: () => void,
-    currentTicket?: () => import("./citationTypes").TargetTicket): Promise<void> {
+  private async resolveFocusCapture(
+    result: FocusResult,
+    options: FocusCiteOptions,
+    signal: AbortSignal,
+  ): Promise<{
+    snapshot: SourceSnapshot;
+    span: import("./citationTypes").OriginSpan;
+    mode: "block" | "fragment";
+    content: string;
+    selectedRanges: TextRange[];
+    sourcePath: string;
+  } | undefined> {
     const item = this.collection?.items.find((candidate) => candidate.fileRef === result.sourceRef);
     if (!item) { this.feedbackEl.setText(t("error.SOURCE_MISSING")); return; }
+    let text: string;
+    try { text = await this.plugin.editors.readSource(result.sourceRef); }
+    catch { this.feedbackEl.setText(t("error.SOURCE_READ_FAILED")); return; }
+    if (signal.aborted) return;
+    // 来源版本必须与结果生成时一致，否则旧预览不得冒充当前来源。
+    if (result.sourceVersion !== this.plugin.searchReader.version(result.sourceRef)) {
+      this.feedbackEl.setText(t("error.SOURCE_STALE") + " · " + t("focus.refresh"));
+      return;
+    }
+    const snapshot = this.plugin.blockIds.capture(item.file, text, item.title);
+    let span = snapshot.spans.find((candidate) => candidate.rawRange.from === result.originRange.from && candidate.rawRange.to === result.originRange.to);
+    if (!span) span = snapshot.spans.filter((candidate) => candidate.rawRange.from <= result.originRange.from && candidate.rawRange.to >= result.originRange.to)
+      .sort((a, b) => (a.rawRange.to - a.rawRange.from) - (b.rawRange.to - b.rawRange.from))[0];
+    if (!span) { this.feedbackEl.setText(t("error.SOURCE_STALE")); return; }
+    if (result.originHash && hashText(span.rawText) !== result.originHash) {
+      this.feedbackEl.setText(t("error.SOURCE_STALE") + " · " + t("focus.refresh"));
+      return;
+    }
+    const mode: "block" | "fragment" = options.wholeBlock ? "block" : "fragment";
+    const preview = result.occurrences?.[options.matchIndex ?? 0] ?? result.preview;
+    if (options.selection !== undefined && !preview?.text.includes(options.selection)) {
+      this.feedbackEl.setText(t("error.SOURCE_MAPPING_UNSUPPORTED"));
+      return;
+    }
+    const content = options.wholeBlock
+      ? this.plugin.blockIds.content(span)
+      : options.selection ?? preview?.text ?? this.plugin.blockIds.content(span);
+    // 即使未收到版本通知，也核对展示文字仍真实存在于当前原文块，避免同长度改写被当作同一来源。
+    if (!options.wholeBlock && span.kind !== "code") {
+      const visible = visibleCharacters(span.rawText, 0).map((character) => character.value).join("");
+      const normalize = (value: string): string => value.replace(/\s+/g, " ").trim();
+      if (normalize(content) && !normalize(visible).includes(normalize(content))) {
+        this.feedbackEl.setText(t("error.SOURCE_STALE") + " · " + t("focus.refresh"));
+        return;
+      }
+    }
+    const selectedRanges = options.wholeBlock
+      ? [{ ...span.rawRange }]
+      : options.selectedRanges?.length
+        ? options.selectedRanges
+        : preview?.sourceOffsets.length
+          ? rangesFromOffsets(preview.sourceOffsets)
+          : [{ ...span.rawRange }];
+    return { snapshot, span, mode, content, selectedRanges, sourcePath: item.path };
+  }
+
+  private async performFocusCitation(result: FocusResult, action: "insert" | "copy", options: FocusCiteOptions,
+    ticket: TargetTicket | undefined, showTarget: () => void,
+    currentTicket?: () => TargetTicket): Promise<void> {
     const controller = new AbortController();
     this.operationControllers.add(controller);
     try {
-      let text: string;
-      try { text = await this.plugin.editors.readSource(result.sourceRef); }
-      catch { this.feedbackEl.setText(t("error.SOURCE_READ_FAILED")); return; }
-      if (controller.signal.aborted) return;
-      // 来源版本必须与结果生成时一致，否则旧预览不得冒充当前来源。
-      if (result.sourceVersion !== this.plugin.searchReader.version(result.sourceRef)) {
-        this.feedbackEl.setText(t("error.SOURCE_STALE") + " · " + t("focus.refresh"));
-        return;
-      }
-      const snapshot = this.plugin.blockIds.capture(item.file, text, item.title);
-      let span = snapshot.spans.find((candidate) => candidate.rawRange.from === result.originRange.from && candidate.rawRange.to === result.originRange.to);
-      if (!span) span = snapshot.spans.filter((candidate) => candidate.rawRange.from <= result.originRange.from && candidate.rawRange.to >= result.originRange.to)
-        .sort((a, b) => (a.rawRange.to - a.rawRange.from) - (b.rawRange.to - b.rawRange.from))[0];
-      if (!span) { this.feedbackEl.setText(t("error.SOURCE_STALE")); return; }
-      if (result.originHash && hashText(span.rawText) !== result.originHash) {
-        this.feedbackEl.setText(t("error.SOURCE_STALE") + " · " + t("focus.refresh"));
-        return;
-      }
-      const mode: "block" | "fragment" = options.wholeBlock ? "block" : "fragment";
-      const preview = result.occurrences?.[options.matchIndex ?? 0] ?? result.preview;
-      if (options.selection !== undefined && !preview?.text.includes(options.selection)) {
-        this.feedbackEl.setText(t("error.SOURCE_MAPPING_UNSUPPORTED"));
-        return;
-      }
-      const content = options.wholeBlock
-        ? this.plugin.blockIds.content(span)
-        : options.selection ?? preview?.text ?? this.plugin.blockIds.content(span);
-      // 即使未收到版本通知，也核对展示文字仍真实存在于当前原文块，避免同长度改写被当作同一来源。
-      if (!options.wholeBlock && span.kind !== "code") {
-        const visible = visibleCharacters(span.rawText, 0).map((character) => character.value).join("");
-        const normalize = (value: string): string => value.replace(/\s+/g, " ").trim();
-        if (normalize(content) && !normalize(visible).includes(normalize(content))) {
-          this.feedbackEl.setText(t("error.SOURCE_STALE") + " · " + t("focus.refresh"));
-          return;
-        }
-      }
-      const intent: CitationIntent = { operationId: crypto.randomUUID(), action, snapshot, spans: [span], mode, content,
-        selectionKey: options.selection ? `${result.key}:selection` : result.key,
+      const resolved = await this.resolveFocusCapture(result, options, controller.signal);
+      if (!resolved) return;
+      const intent: CitationIntent = { operationId: crypto.randomUUID(), action, snapshot: resolved.snapshot, spans: [resolved.span],
+        mode: resolved.mode, content: resolved.content,
+        selectionKey: canonicalSelectionKey([resolved.span], resolved.selectedRanges),
         templateId: this.plugin.settings.defaultTemplate,
         customTemplate: this.plugin.settings.customTemplate, date: localDate() };
       await performCitation(this.plugin, intent, this.feedbackEl, ticket, controller.signal,
         showTarget, () => { this.feedbackEl.empty(); }, currentTicket);
+    } catch {
+      if (!controller.signal.aborted) this.feedbackEl.setText(t("state.error"));
     } finally {
       this.operationControllers.delete(controller);
+    }
+  }
+
+  async collectToOutline(snapshot: SourceSnapshot, fragment: CapturedFragment): Promise<void>;
+  async collectToOutline(result: FocusResult, options?: FocusCiteOptions): Promise<void>;
+  async collectToOutline(
+    first: SourceSnapshot | FocusResult,
+    second?: CapturedFragment | FocusCiteOptions,
+  ): Promise<void> {
+    if ("spans" in first) {
+      const fragment = second as CapturedFragment | undefined;
+      if (!fragment) return;
+      const sourcePath = this.plugin.editors.path(first.sourceRef);
+      const evidenceSnapshot = buildEvidenceSnapshot({ sourcePath, sourceSnapshot: first, fragment });
+      await this.beginCollect(first, fragment.spans, evidenceSnapshot);
+      return;
+    }
+    const options = (second as FocusCiteOptions | undefined) ?? {};
+    if (options.selectionInvalid) { this.feedbackEl.setText(t("error.SOURCE_MAPPING_UNSUPPORTED")); return; }
+    const controller = new AbortController();
+    this.operationControllers.add(controller);
+    try {
+      const resolved = await this.resolveFocusCapture(first, options, controller.signal);
+      if (!resolved) return;
+      const fragment: CapturedFragment = {
+        spans: [resolved.span],
+        content: resolved.content,
+        mode: resolved.mode,
+        selectionKey: canonicalSelectionKey([resolved.span], resolved.selectedRanges),
+        selectedRanges: resolved.selectedRanges,
+      };
+      const evidenceSnapshot = buildEvidenceSnapshot({
+        sourcePath: resolved.sourcePath,
+        sourceSnapshot: resolved.snapshot,
+        fragment,
+      });
+      await this.beginCollect(resolved.snapshot, [resolved.span], evidenceSnapshot);
+    } finally {
+      this.operationControllers.delete(controller);
+    }
+  }
+
+  async collectActiveToOutline(): Promise<void> {
+    if (this.activeMode === "outline") {
+      this.feedbackEl.setText(t("outline.noActiveSelection"));
+      return;
+    }
+    if (this.focus) {
+      try {
+        const active = this.focusResults?.activeCapture();
+        if (!active) { this.feedbackEl.setText(t("outline.noActiveSelection")); return; }
+        await this.collectToOutline(active.result, active.options);
+      } catch (error) {
+        const code = error instanceof CitationError ? error.code : "SOURCE_MAPPING_UNSUPPORTED";
+        this.feedbackEl.setText(t(`error.${code}`));
+      }
+      return;
+    }
+    try {
+      const captured = CardView.activeCaptureIn(this.streamEl);
+      if (!captured) { this.feedbackEl.setText(t("outline.noActiveSelection")); return; }
+      await this.plugin.blockIds.inspect(captured.snapshot, captured.fragment.spans);
+      await this.collectToOutline(captured.snapshot, captured.fragment);
+    } catch (error) {
+      const code = error instanceof CitationError ? error.code : "CAPTURE_STALE";
+      this.feedbackEl.setText(t(`error.${code}`));
     }
   }
 
@@ -734,12 +882,23 @@ export class CardStreamController implements ToolbarHost, SourceBarHost, CardHos
         .filter((match) => match.from >= range.from && match.to <= range.to)
         .map((match) => ({ from: match.from - range.from, to: match.to - range.from })));
       button.setText(t("focus.collapse"));
-    } catch { this.feedbackEl.setText(t("error.SOURCE_READ_FAILED")); }
+    } catch {
+      container.addClass("is-hidden");
+      container.empty();
+      button.setText(t("focus.expandSection"));
+      this.feedbackEl.setText(t("error.SOURCE_READ_FAILED"));
+    }
   }
 
-  openSource(result: FocusResult): void {
-    const anchor = result.heading ? `#${result.heading}` : "";
-    void this.plugin.app.workspace.openLinkText(result.filePath + anchor, "", false);
+  openSource(target: FocusResult | EvidenceEntry): void {
+    if ("snapshot" in target) {
+      const origin = target.snapshot.origins[0];
+      const anchor = origin?.blockId ? `#^${origin.blockId}` : origin?.heading ? `#${origin.heading}` : "";
+      void this.plugin.app.workspace.openLinkText(target.snapshot.source.path + anchor, "", false);
+      return;
+    }
+    const anchor = target.heading ? `#${target.heading}` : "";
+    void this.plugin.app.workspace.openLinkText(target.filePath + anchor, "", false);
   }
 
   // ------------------------------------------------------------- CardHost
@@ -781,7 +940,14 @@ export class CardStreamController implements ToolbarHost, SourceBarHost, CardHos
   }
   getTarget(): TargetBinding | undefined { return this.binding; }
   getCitationFeedback(): HTMLElement { return this.feedbackEl; }
-  refreshCitationContext(): void { this.targetBar?.render(); this.stream?.refreshCitationContext(); }
+  refreshCitationContext(): void {
+    this.targetBar?.render();
+    this.stream?.refreshCitationContext();
+    this.updateModeSwitch();
+    if (this.activeMode === "outline" && !this.outlinePanel?.hasPendingNotes()) {
+      this.outlinePanel?.render();
+    }
+  }
   bindTarget(editorId: string): void {
     try {
       this.binding = this.plugin.editors.bind(editorId, this.binding);
@@ -882,10 +1048,18 @@ export class CardStreamController implements ToolbarHost, SourceBarHost, CardHos
   currentDesk(): Desk | undefined { return this.desk(); }
   desks(): Desk[] { return this.plugin.desks.list(); }
   recentDesks(): Desk[] { return this.plugin.desks.recent(); }
-  isDirty(id: string): boolean { return this.plugin.desks.isDirty(id); }
+  isDirty(id?: string): boolean { return this.plugin.desks.isDirty(id ?? this.deskId ?? ""); }
   async openDesk(id: string): Promise<void> {
     if (this.deskId === id) return;
+    if (!this.plugin.desks.exists(id)) {
+      new Notice(t("desk.missing"));
+      this.deskSelector?.render();
+      return;
+    }
+    await this.outlinePanel?.flushPendingNotes();
     this.deskEpoch++;
+    this.closeDraft();
+    this.pendingCollectAfterCreate = undefined;
     if (this.focus) this.exitFocus();
     this.abortOperations();
     this.readingPosition?.cancelRestore();
@@ -897,12 +1071,16 @@ export class CardStreamController implements ToolbarHost, SourceBarHost, CardHos
     this.targetBar?.render();
     this.sourceBar?.update();
     this.toolbar?.update();
+    this.updateModeSwitch();
+    if (this.activeMode === "outline") this.outlinePanel?.render();
     this.temp = { rules: [], manualPaths: [], reading: defaultReadingState(), targetPath: "" };
     this.view.requestSaveState();
     await this.refreshCollection();
   }
   async createDesk(name: string, targetPath: string, operationId: string): Promise<DeskFormResult> {
     if (this.focus) this.exitFocus();
+    const pendingCollect = this.pendingCollectAfterCreate;
+    this.pendingCollectAfterCreate = undefined;
     const epoch = ++this.deskEpoch;
     const created = await this.plugin.desks.create({ id: operationId, name, targetPath, rules: this.getRules(), manualPaths: this.getManualPaths(), reading: this.readingState() });
     if (created.result !== "ok") return created.result;
@@ -916,8 +1094,19 @@ export class CardStreamController implements ToolbarHost, SourceBarHost, CardHos
     this.targetBar?.render();
     this.sourceBar?.update();
     this.toolbar?.update();
+    this.updateModeSwitch();
+    if (this.activeMode === "outline") this.outlinePanel?.render();
     this.view.requestSaveState();
     await this.refreshCollection();
+    if (pendingCollect && pendingCollect.epoch + 1 === this.deskEpoch && !this.destroyed && this.deskId === created.desk.id) {
+      try {
+        await this.plugin.blockIds.inspect(pendingCollect.sourceSnapshot, pendingCollect.spans);
+        await this.performCollect(created.desk.id, pendingCollect.entryId, pendingCollect.evidenceSnapshot);
+      } catch (error) {
+        const code = error instanceof CitationError ? error.code : "CAPTURE_STALE";
+        this.feedbackEl.setText(t(`error.${code}`));
+      }
+    }
     return "ok";
   }
   async renameDesk(id: string, name: string): Promise<DeskFormResult> {
@@ -927,7 +1116,11 @@ export class CardStreamController implements ToolbarHost, SourceBarHost, CardHos
   }
   async deleteDesk(id: string): Promise<void> {
     const wasCurrent = this.deskId === id;
-    if (wasCurrent) this.deskEpoch++;
+    if (wasCurrent) {
+      this.deskEpoch++;
+      this.closeDraft();
+      this.pendingCollectAfterCreate = undefined;
+    }
     if (wasCurrent && this.focus) this.exitFocus();
     this.abortOperations();
     this.readingPosition?.cancelRestore();
@@ -943,6 +1136,8 @@ export class CardStreamController implements ToolbarHost, SourceBarHost, CardHos
     this.targetBar?.render();
     this.sourceBar?.update();
     this.toolbar?.update();
+    this.updateModeSwitch();
+    if (this.activeMode === "outline") this.outlinePanel?.render();
   }
   markdownPaths(): string[] { return this.plugin.app.vault.getMarkdownFiles().map((file) => file.path); }
   suggestedTarget(): string | undefined {
@@ -953,5 +1148,623 @@ export class CardStreamController implements ToolbarHost, SourceBarHost, CardHos
   suggestedName(): string {
     const active = this.plugin.app.workspace.getActiveFile();
     return active ? active.basename : t("desk.new");
+  }
+
+  // ------------------------------------------------------------- Outline & Modes
+  private setMode(mode: "materials" | "outline"): void {
+    if (this.activeMode === mode) return;
+    if (mode === "outline") {
+      if (!this.focus) this.captureAnchor();
+      this.activeMode = "outline";
+      this.applyModeVisibility();
+      this.outlinePanel?.render();
+    } else {
+      void this.outlinePanel?.flushPendingNotes();
+      this.activeMode = "materials";
+      this.applyModeVisibility();
+      if (!this.focus) void this.restoreAnchor();
+    }
+    this.updateModeSwitch();
+  }
+
+  private applyModeVisibility(): void {
+    const outlineActive = this.activeMode === "outline";
+    this.sourceBar?.el.toggleClass("is-hidden", outlineActive);
+    this.toolbar?.el.toggleClass("is-hidden", outlineActive);
+    this.focusBar?.el.toggleClass("is-hidden", outlineActive || !this.focus);
+    this.streamEl?.toggleClass("is-hidden", outlineActive || !!this.focus);
+    this.focusResultsEl?.toggleClass("is-hidden", outlineActive || !this.focus);
+    this.outlinePanel?.el.toggleClass("is-hidden", !outlineActive);
+  }
+
+  private updateModeSwitch(): void {
+    const count = this.desk()?.outline.entries.length ?? 0;
+    this.outlineTabBtn?.setText(count > 0 ? `${t("outline.tabOutline")} (${count})` : t("outline.tabOutline"));
+    this.materialsTabBtn?.toggleClass("is-active", this.activeMode === "materials");
+    this.outlineTabBtn?.toggleClass("is-active", this.activeMode === "outline");
+  }
+
+  private async beginCollect(
+    sourceSnapshot: SourceSnapshot,
+    spans: readonly import("./citationTypes").OriginSpan[],
+    evidenceSnapshot: EvidenceSnapshot,
+  ): Promise<void> {
+    if (this.plugin.store.readOnly) {
+      this.feedbackEl.setText(t("error.OUTLINE_READONLY"));
+      return;
+    }
+    const entryId = `entry-${crypto.randomUUID()}`;
+    if (!this.deskId) {
+      const epoch = this.deskEpoch;
+      const choice = await citationPrompt(this.plugin.app, t("outline.saveDeskFirst"), [
+        { id: "save", label: t("desk.saveAs") },
+      ]);
+      if (choice !== "save" || this.destroyed || epoch !== this.deskEpoch) return;
+      this.pendingCollectAfterCreate = { epoch, entryId, sourceSnapshot, spans, evidenceSnapshot };
+      this.openCreateDeskForm();
+      return;
+    }
+    await this.performCollect(this.deskId, entryId, evidenceSnapshot);
+  }
+
+  private async performCollect(
+    deskId: string,
+    entryId: string,
+    snapshot: EvidenceSnapshot,
+  ): Promise<void> {
+    const desk = this.plugin.desks.get(deskId);
+    if (!desk || this.deskId !== deskId || !this.plugin.outline) {
+      this.feedbackEl.setText(t("error.DESK_DELETED"));
+      return;
+    }
+    const deskGeneration = this.plugin.desks.generation(deskId);
+    const controller = new AbortController();
+    this.operationControllers.add(controller);
+    try {
+      let res = await this.plugin.outline.collect({
+        deskId,
+        deskGeneration,
+        expectedRevision: this.plugin.outline.outlineRevision(deskId),
+        entryId,
+        snapshot,
+      });
+      if (controller.signal.aborted || this.destroyed) return;
+      if (res.code === "DUPLICATE_ENTRY" && res.duplicateEntryId) {
+        const existingId = res.duplicateEntryId;
+        const choice = await citationPrompt(
+          this.plugin.app,
+          `${t("outline.duplicatePrompt", { desk: desk.name })}\n${snapshot.content.slice(0, 160)}`,
+          [
+            { id: "view", label: t("outline.duplicateViewExisting") },
+            { id: "collect", label: t("outline.duplicateStillCollect") },
+          ],
+          controller.signal,
+        );
+        if (controller.signal.aborted || this.destroyed || this.deskId !== deskId) return;
+        if (choice === "view") {
+          this.setMode("outline");
+          this.outlinePanel?.selectEntry(existingId);
+          return;
+        }
+        if (choice !== "collect") return;
+        res = await this.plugin.outline.collect({
+          deskId,
+          deskGeneration,
+          expectedRevision: this.plugin.outline.outlineRevision(deskId),
+          entryId,
+          snapshot,
+          allowDuplicate: true,
+        });
+      }
+      if (controller.signal.aborted || this.destroyed) return;
+      this.updateModeSwitch();
+      if (this.activeMode === "outline") this.outlinePanel?.render();
+      this.feedbackEl.empty();
+      if (res.ok && res.saved && res.entry) {
+        this.feedbackEl.createDiv({ text: t("outline.addedToDesk", { desk: desk.name }) });
+        this.feedbackEl.createEl("button", { cls: "slipstream-btn", text: t("outline.viewInOutline") })
+          .addEventListener("click", () => {
+            if (this.deskId === deskId) {
+              this.setMode("outline");
+              this.outlinePanel?.selectEntry(res.entry!.id);
+            }
+          });
+      } else if (res.ok && !res.saved) {
+        this.feedbackEl.createDiv({ text: t("outline.statusUnsaved") });
+        const retryBtn = this.feedbackEl.createEl("button", { cls: "slipstream-btn", text: t("outline.retrySave") });
+        retryBtn.addEventListener("click", () => {
+          retryBtn.disabled = true;
+          void this.plugin.outline.collect({
+            deskId,
+            deskGeneration,
+            expectedRevision: this.plugin.outline.outlineRevision(deskId),
+            entryId,
+            snapshot,
+          }).then((retryRes) => {
+            if (this.destroyed) return;
+            if (retryRes.ok && retryRes.saved) {
+              this.feedbackEl.setText(t("outline.addedToDesk", { desk: desk.name }));
+              if (this.activeMode === "outline") this.outlinePanel?.render();
+            } else {
+              retryBtn.disabled = false;
+              this.feedbackEl.setText(t(`error.${retryRes.code ?? "OUTLINE_SAVE_FAILED"}`));
+            }
+          });
+        });
+      } else {
+        this.feedbackEl.setText(t(`error.${res.code ?? "OUTLINE_SAVE_FAILED"}`));
+      }
+    } finally {
+      this.operationControllers.delete(controller);
+    }
+  }
+
+  // OutlinePanelHost
+  currentDeskId(): string | undefined { return this.deskId; }
+  getOutline(): { outline: EvidenceOutline; revision: number } | undefined {
+    if (!this.deskId || !this.plugin.outline) return undefined;
+    return this.plugin.outline.getOutline(this.deskId);
+  }
+  isReadOnly(): boolean { return this.plugin.store.readOnly; }
+  recordingEnabled(): boolean { return this.plugin.history.enabled; }
+  isSourceMissing(path: string): boolean {
+    const file = this.plugin.app.vault.getAbstractFileByPath(path);
+    return !(file instanceof TFile) || file.extension !== "md";
+  }
+  switchToMaterials(): void { this.setMode("materials"); }
+  openCreateDesk(): void { this.openCreateDeskForm(); }
+  async retrySave(): Promise<void> {
+    if (!this.deskId || !this.plugin.outline) return;
+    await this.plugin.outline.save(this.deskId);
+    this.deskSelector?.render();
+  }
+  async setNote(entryId: string, expectedContentRevision: number, note: string, persist = true): Promise<OutlineMutationResult> {
+    if (!this.deskId || !this.plugin.outline) return { ok: false, saved: false, outlineRevision: 0, code: "DESK_DELETED" };
+    const res = await this.plugin.outline.setNote({
+      deskId: this.deskId,
+      expectedRevision: this.plugin.outline.outlineRevision(this.deskId),
+      entryId,
+      expectedContentRevision,
+      note,
+      persist,
+    });
+    this.deskSelector?.render();
+    return res;
+  }
+  async createGroup(name: string, groupId?: string): Promise<OutlineMutationResult> {
+    if (!this.deskId || !this.plugin.outline) return { ok: false, saved: false, outlineRevision: 0, code: "DESK_DELETED" };
+    const res = await this.plugin.outline.createGroup({
+      deskId: this.deskId,
+      expectedRevision: this.plugin.outline.outlineRevision(this.deskId),
+      name,
+      groupId,
+    });
+    this.deskSelector?.render();
+    return res;
+  }
+  async renameGroup(groupId: string, name: string): Promise<OutlineMutationResult> {
+    if (!this.deskId || !this.plugin.outline) return { ok: false, saved: false, outlineRevision: 0, code: "DESK_DELETED" };
+    const res = await this.plugin.outline.renameGroup({
+      deskId: this.deskId,
+      expectedRevision: this.plugin.outline.outlineRevision(this.deskId),
+      groupId,
+      name,
+    });
+    this.deskSelector?.render();
+    return res;
+  }
+  async moveGroup(groupId: string, direction: "up" | "down"): Promise<OutlineMutationResult> {
+    if (!this.deskId || !this.plugin.outline) return { ok: false, saved: false, outlineRevision: 0, code: "DESK_DELETED" };
+    const res = await this.plugin.outline.moveGroup({
+      deskId: this.deskId,
+      expectedRevision: this.plugin.outline.outlineRevision(this.deskId),
+      groupId,
+      direction,
+    });
+    this.deskSelector?.render();
+    return res;
+  }
+  async removeGroup(groupId: string): Promise<OutlineMutationResult> {
+    if (!this.deskId || !this.plugin.outline) return { ok: false, saved: false, outlineRevision: 0, code: "DESK_DELETED" };
+    const res = await this.plugin.outline.removeGroup({
+      deskId: this.deskId,
+      expectedRevision: this.plugin.outline.outlineRevision(this.deskId),
+      groupId,
+    });
+    this.deskSelector?.render();
+    return res;
+  }
+  async moveEntry(entryId: string, targetGroupId: string | null | undefined, direction?: "up" | "down"): Promise<OutlineMutationResult> {
+    if (!this.deskId || !this.plugin.outline) return { ok: false, saved: false, outlineRevision: 0, code: "DESK_DELETED" };
+    const res = await this.plugin.outline.moveEntry({
+      deskId: this.deskId,
+      expectedRevision: this.plugin.outline.outlineRevision(this.deskId),
+      entryId,
+      targetGroupId,
+      direction,
+    });
+    this.deskSelector?.render();
+    return res;
+  }
+  async removeEntry(entryId: string): Promise<OutlineMutationResult> {
+    if (!this.deskId || !this.plugin.outline) return { ok: false, saved: false, outlineRevision: 0, code: "DESK_DELETED" };
+    const res = await this.plugin.outline.removeEntry({
+      deskId: this.deskId,
+      expectedRevision: this.plugin.outline.outlineRevision(this.deskId),
+      entryId,
+    });
+    this.updateModeSwitch();
+    this.deskSelector?.render();
+    return res;
+  }
+
+  openPreview(scope: OutlineScope, existingDraft?: OutlinePreviewDraft): void {
+    if (!this.deskId || !this.plugin.outline) {
+      this.feedbackEl.setText(t("outline.saveDeskFirst"));
+      return;
+    }
+    const selection = this.plugin.outline.selectEntries(this.deskId, scope);
+    if (!selection || (selection.groups.length === 0 && selection.entries.length === 0)) {
+      this.feedbackEl.setText(t("outline.emptyTitle"));
+      return;
+    }
+    const deskId = this.deskId;
+    new OutlineInsertModal({
+      plugin: this.plugin,
+      deskId,
+      scope,
+      draft: existingDraft,
+      getTicket: () => {
+        try { return this.plugin.editors.ticket(this.binding); }
+        catch { return undefined; }
+      },
+      getTargetPath: () => this.currentTargetPath(),
+      getTargetError: () => {
+        try { this.plugin.editors.ticket(this.binding); return undefined; }
+        catch (error) { return error instanceof CitationError ? error.code : "TARGET_MISSING"; }
+      },
+      getTemplateRevision: () => this.plugin.templateRevision ?? 0,
+      renderMarkdown: (markdown, container, sourcePath, component) =>
+        MarkdownRenderer.render(this.plugin.app, markdown, container, sourcePath, component),
+      openTarget: (path) => {
+        if (this.binding) {
+          try { this.plugin.editors.show(this.binding); return; } catch { /* fallback to path */ }
+        }
+        const target = path ?? this.currentTargetPath();
+        if (target) void this.plugin.app.workspace.openLinkText(target, "", false);
+      },
+      openSource: (path, anchor) => {
+        void this.plugin.app.workspace.openLinkText(path + (anchor ?? ""), "", false);
+      },
+      onSuspend: (reason, draft, entryId) => {
+        if (this.destroyed || this.deskId !== draft.deskId) return;
+        this.previewDraft = { ...draft, state: reason === "target" ? "suspended-target" : "suspended-source", handoff: { kind: reason, entryId } };
+        this.renderDraftBanner();
+        if (reason === "target" && !this.binding && this.currentTargetPath()) {
+          void this.plugin.app.workspace.openLinkText(this.currentTargetPath()!, "", false);
+        } else if (reason === "source" && entryId) {
+          const entry = this.plugin.outline.getEntry(draft.deskId, entryId);
+          if (entry && !this.isSourceMissing(entry.snapshot.source.path)) {
+            this.openSource(entry);
+          }
+        }
+      },
+      onCancel: (draftId) => {
+        if (this.previewDraft?.draftId === draftId) this.closeDraft();
+      },
+      onCommitted: (outcome, committedDeskId) => {
+        this.closeDraft();
+        this.updateModeSwitch();
+        if (this.activeMode === "outline") this.outlinePanel?.render();
+        this.deskSelector?.render();
+        this.reportBatchOutcome(outcome, committedDeskId);
+      },
+      onUncertain: (outcome, committedDeskId) => {
+        this.closeDraft();
+        this.reportUncertainBatchOutcome(outcome, committedDeskId);
+      },
+      onPartialSources: (outcome, committedDeskId) => {
+        this.reportPartialSourceOutcome(outcome, committedDeskId);
+      },
+      onOutlineUpdated: () => {
+        this.updateModeSwitch();
+        if (this.activeMode === "outline") this.outlinePanel?.render();
+        this.deskSelector?.render();
+      },
+    }).open();
+  }
+
+  private closeDraft(): void {
+    if (this.previewDraft) {
+      this.previewDraft.state = "closed";
+      this.previewDraft = undefined;
+    }
+    this.renderDraftBanner();
+  }
+
+  private renderDraftBanner(): void {
+    if (!this.draftBannerEl) return;
+    this.draftBannerEl.empty();
+    if (!this.previewDraft || this.previewDraft.deskId !== this.deskId) {
+      this.draftBannerEl.addClass("is-hidden");
+      return;
+    }
+    this.draftBannerEl.removeClass("is-hidden");
+    const isSource = this.previewDraft.state === "suspended-source";
+    this.draftBannerEl.createSpan({ text: t(isSource ? "outline.draftPendingSource" : "outline.draftPendingTarget") });
+    this.draftBannerEl.createEl("button", {
+      cls: "slipstream-btn",
+      text: t(isSource ? "outline.draftReturnSource" : "outline.draftReturn"),
+    }).addEventListener("click", () => { void this.resumeDraft(); });
+    this.draftBannerEl.createEl("button", {
+      cls: "slipstream-btn",
+      text: t("outline.draftCancel"),
+    }).addEventListener("click", () => this.closeDraft());
+  }
+
+  private async resumeDraft(): Promise<void> {
+    const draft = this.previewDraft;
+    if (!draft || this.destroyed || draft.deskId !== this.deskId || !this.plugin.outline) return;
+    const validDesk = this.plugin.desks.exists(draft.deskId) &&
+      this.plugin.desks.generation(draft.deskId) === draft.deskGeneration;
+    const validScope = validDesk ? this.plugin.outline.selectEntries(draft.deskId, draft.scope) : undefined;
+    if (!validDesk || !validScope) {
+      this.closeDraft();
+      this.feedbackEl.setText(t("outline.draftExpired"));
+      return;
+    }
+    if (draft.state === "suspended-target") {
+      this.openPreview(draft.scope, draft);
+      return;
+    }
+    const entryId = draft.handoff?.entryId;
+    const entry = entryId ? this.plugin.outline.getEntry(draft.deskId, entryId) : undefined;
+    if (!entry) {
+      this.closeDraft();
+      this.feedbackEl.setText(t("outline.draftExpired"));
+      return;
+    }
+    const candidates = this.collectOpenEditorSelections(entry);
+    if (!candidates.length) {
+      this.feedbackEl.setText(t("outline.reselectNone"));
+      return;
+    }
+    new SourceReselectConfirmModal(this.plugin.app, entry, candidates, async (chosen) => {
+      if (this.destroyed || this.deskId !== draft.deskId || this.previewDraft?.draftId !== draft.draftId) return;
+      const latestEntry = this.plugin.outline.getEntry(draft.deskId, entry.id);
+      if (!latestEntry) {
+        this.closeDraft();
+        this.feedbackEl.setText(t("outline.draftExpired"));
+        return;
+      }
+      const res = await this.plugin.outline.refreshEntry({
+        deskId: draft.deskId,
+        expectedRevision: this.plugin.outline.outlineRevision(draft.deskId),
+        entryId: latestEntry.id,
+        expectedContentRevision: latestEntry.contentRevision,
+        snapshot: chosen,
+      });
+      if (!res.ok) {
+        this.feedbackEl.setText(t(`error.${res.code ?? "ENTRY_STALE"}`));
+        return;
+      }
+      this.updateModeSwitch();
+      if (this.activeMode === "outline") this.outlinePanel?.render();
+      this.openPreview(draft.scope, draft);
+    }).open();
+  }
+
+  private collectOpenEditorSelections(entry: EvidenceEntry): Array<{ path: string; snapshot: EvidenceSnapshot }> {
+    const out: Array<{ path: string; snapshot: EvidenceSnapshot }> = [];
+    for (const leaf of this.plugin.app.workspace.getLeavesOfType("markdown")) {
+      const view = leaf.view;
+      if (!(view instanceof MarkdownView) || !(view.file instanceof TFile) || view.file.extension !== "md") continue;
+      if (view.getMode() !== "source") continue;
+      const selText = view.editor.getSelection();
+      if (!selText || !selText.trim()) continue;
+      const fromOffset = view.editor.posToOffset(view.editor.getCursor("from"));
+      const toOffset = view.editor.posToOffset(view.editor.getCursor("to"));
+      const snapshot = this.captureEditorSelectionSnapshot(
+        view.file,
+        view.editor.getValue(),
+        fromOffset,
+        toOffset,
+        entry.snapshot.source.capturedPath,
+      );
+      if (snapshot) out.push({ path: view.file.path, snapshot });
+    }
+    out.sort((a, b) => (a.path === entry.snapshot.source.path ? -1 : b.path === entry.snapshot.source.path ? 1 : 0));
+    return out;
+  }
+
+  private captureEditorSelectionSnapshot(
+    file: TFile,
+    text: string,
+    rawFrom: number,
+    rawTo: number,
+    capturedPath: string,
+  ): EvidenceSnapshot | undefined {
+    const from = Math.min(rawFrom, rawTo);
+    const to = Math.max(rawFrom, rawTo);
+    if (to <= from) return undefined;
+    const live = this.plugin.blockIds.capture(file, text, file.basename);
+    const overlapping = live.spans.filter((span) => span.rawRange.to > from && span.rawRange.from < to);
+    const hasChildItem = overlapping.some((span) => span.kind === "list_item");
+    const filtered = overlapping.filter((span) => !(hasChildItem && span.kind === "list"))
+      .sort((a, b) => a.rawRange.from - b.rawRange.from || b.rawRange.to - a.rawRange.to);
+    const origins: SavedOrigin[] = [];
+    const selectedRanges: TextRange[] = [];
+    let prevTo = 0;
+    for (const span of filtered) {
+      if (span.rawRange.from < prevTo) continue;
+      const selFrom = Math.max(from, span.rawRange.from);
+      const selTo = Math.min(to, span.rawRange.to);
+      if (selTo <= selFrom) continue;
+      prevTo = span.rawRange.to;
+      origins.push({
+        range: { ...span.rawRange },
+        rawText: span.rawText,
+        kind: span.kind,
+        ...(span.existingBlockId ? { blockId: span.existingBlockId } : {}),
+        ...(span.heading ? { heading: span.heading } : {}),
+        before: sliceContextBefore(text, span.rawRange.from),
+        after: sliceContextAfter(text, span.rawRange.to),
+      });
+      selectedRanges.push({ from: selFrom, to: selTo });
+    }
+    if (!origins.length || !selectedRanges.length) return undefined;
+    const content = text.slice(from, to);
+    if (!content.trim()) return undefined;
+    return {
+      content,
+      mode: "selection",
+      source: {
+        path: file.path,
+        capturedPath,
+        title: live.title ?? file.basename,
+        capturedAt: Date.now(),
+        sourceLength: text.length,
+        identity: "path-reference",
+      },
+      origins,
+      selectedRanges,
+    };
+  }
+
+  private reportPartialSourceOutcome(outcome: BatchCommitOutcome, committedDeskId: string): void {
+    const details = outcome.sourceResults
+      .filter((sr) => sr.createdIds.length > 0 || sr.kind === "unknown")
+      .map((sr) => (sr.createdIds.length > 0
+        ? t("outline.sourceCreated", { path: sr.sourcePath, ids: sr.createdIds.join(", ") })
+        : t("outline.sourceUnknown", { path: sr.sourcePath })));
+    const header = t("outline.commitPartialSources");
+    if (this.destroyed || this.deskId !== committedDeskId) {
+      new Notice([header, ...details].join("\n"));
+      return;
+    }
+    this.feedbackEl.empty();
+    this.feedbackEl.createDiv({ text: header });
+    for (const line of details) {
+      this.feedbackEl.createDiv({ text: line });
+    }
+  }
+
+  private reportUncertainBatchOutcome(outcome: BatchCommitOutcome, committedDeskId: string): void {
+    const targetPath = outcome.targetPath ?? this.currentTargetPath() ?? "";
+    const message = t("outline.commitUncertain", { path: targetPath });
+    if (this.destroyed || this.deskId !== committedDeskId) {
+      new Notice(message);
+      return;
+    }
+    this.feedbackEl.empty();
+    this.feedbackEl.createDiv({ text: message });
+    if (targetPath) {
+      this.feedbackEl.createEl("button", { cls: "slipstream-btn", text: t("outline.openTarget") })
+        .addEventListener("click", () => { void this.plugin.app.workspace.openLinkText(targetPath, "", false); });
+    }
+  }
+
+  private reportBatchOutcome(outcome: BatchCommitOutcome, committedDeskId: string): void {
+    const targetPath = outcome.targetPath ?? this.currentTargetPath() ?? "";
+    const message = outcome.recording === "pending"
+      ? t("outline.commitPartialRecord", { path: targetPath })
+      : outcome.recording === "capacity-exceeded"
+        ? t("outline.commitCapacityExceeded", { path: targetPath })
+        : t("outline.commitSuccess", { path: targetPath, count: outcome.includedItemCount });
+    const otherDesk = this.deskId !== committedDeskId;
+    if (otherDesk) {
+      new Notice(message);
+      if (outcome.recording !== "pending") return;
+    }
+    if (this.destroyed) {
+      if (!otherDesk) new Notice(message);
+      return;
+    }
+    this.feedbackEl.empty();
+    const statusLine = this.feedbackEl.createDiv({ text: message });
+    if (outcome.recording === "disabled") {
+      this.feedbackEl.createDiv({ text: t("outline.recordingDisabledNotice") });
+    }
+    if (outcome.recording === "pending") {
+      const retry = this.feedbackEl.createEl("button", { cls: "slipstream-btn", text: t("outline.retryRecordOnly") });
+      retry.addEventListener("click", () => {
+        retry.disabled = true;
+        void this.plugin.history.retryBatch(outcome.batchId).then(
+          (res) => {
+            if (this.destroyed) return;
+            if (res !== "pending") {
+              outcome.recording = res;
+              this.feedbackEl.setText(t(res === "capacity-exceeded" ? "outline.commitCapacityExceeded" : "citation.recordSaved", { path: targetPath }));
+              if (this.activeMode === "outline") this.outlinePanel?.render();
+            } else {
+              retry.disabled = false;
+            }
+          },
+          () => {
+            if (this.destroyed) return;
+            retry.disabled = false;
+            statusLine.setText(t("data.saveFailed"));
+          },
+        );
+      });
+    }
+    if (targetPath) {
+      this.feedbackEl.createEl("button", { cls: "slipstream-btn", text: t("outline.openTarget") })
+        .addEventListener("click", () => { void this.plugin.app.workspace.openLinkText(targetPath, "", false); });
+    }
+  }
+}
+
+class SourceReselectConfirmModal extends Modal {
+  private selectedIdx = 0;
+
+  constructor(
+    app: App,
+    private entry: EvidenceEntry,
+    private candidates: Array<{ path: string; snapshot: EvidenceSnapshot }>,
+    private onConfirm: (snapshot: EvidenceSnapshot) => Promise<void>,
+  ) {
+    super(app);
+  }
+
+  onOpen(): void {
+    this.render();
+  }
+
+  private render(): void {
+    this.contentEl.empty();
+    this.contentEl.createEl("h3", { text: t("outline.refreshCompareTitle") });
+    this.contentEl.createDiv({ text: t("outline.reselectPrompt") });
+    if (this.candidates.length > 1) {
+      const select = this.contentEl.createEl("select");
+      this.candidates.forEach((cand, index) => {
+        const opt = select.createEl("option", { value: String(index), text: cand.path });
+        if (index === this.selectedIdx) opt.selected = true;
+      });
+      select.addEventListener("change", () => {
+        this.selectedIdx = Number(select.value) || 0;
+        this.render();
+      });
+    }
+    const chosen = this.candidates[this.selectedIdx];
+    if (chosen.path !== this.entry.snapshot.source.path) {
+      this.contentEl.createDiv({ cls: "slipstream-desk-dirty", text: t("outline.newPathNotice", { path: chosen.path }) });
+      this.contentEl.createDiv({ cls: "slipstream-anchor-status", text: t("outline.capturedPathNotice", { path: this.entry.snapshot.source.capturedPath }) });
+    }
+    const compare = this.contentEl.createDiv({ cls: "slipstream-outline-compare" });
+    const oldBox = compare.createDiv({ cls: "slipstream-outline-modal-section" });
+    oldBox.createDiv({ cls: "slipstream-card-title", text: t("outline.refreshOld") });
+    oldBox.createDiv({ cls: "slipstream-outline-entry-content", text: this.entry.snapshot.content });
+    const newBox = compare.createDiv({ cls: "slipstream-outline-modal-section" });
+    newBox.createDiv({ cls: "slipstream-card-title", text: t("outline.refreshNew") });
+    newBox.createDiv({ cls: "slipstream-outline-entry-content", text: chosen.snapshot.content });
+
+    const actions = this.contentEl.createDiv({ cls: "slipstream-prompt-actions" });
+    actions.createEl("button", { cls: "slipstream-btn", text: t("common.cancel") }).addEventListener("click", () => this.close());
+    actions.createEl("button", { cls: "slipstream-btn", text: t("outline.refreshConfirm") }).addEventListener("click", () => {
+      const snapshot = chosen.snapshot;
+      this.close();
+      void this.onConfirm(snapshot);
+    });
   }
 }
